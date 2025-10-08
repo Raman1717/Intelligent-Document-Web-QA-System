@@ -486,23 +486,23 @@ def process_source(source: str) -> List[str]:
     Complete source processing pipeline for either file or URL.
     """
     if is_valid_url(source):
-        print("🌐 Processing web URL...")
+        print(" Processing web URL...")
         chunks = extract_chunks_from_url(source)
     else:
-        print("📄 Processing document...")
+        print(" Processing document...")
         chunks = extract_chunks(source)  # This will handle all file formats now
     save_chunks_to_file(chunks)
-    print(f"✅ Extracted {len(chunks)} chunks and saved to chunks.pkl")
+    print(f"Extracted {len(chunks)} chunks and saved to chunks.pkl")
     return chunks
 
 def initialize_qa_system() -> Tuple[SentenceTransformer, faiss.Index, List[str]]:
     """ 
     Initialize the QA system by loading chunks and creating embeddings.
     """
-    print("🔄 Loading and embedding chunks...")
+    print("Loading and embedding chunks...")
     chunks = load_chunks_from_file()
     model, index, embeddings = embed_and_store(chunks)
-    print(f"✅ Stored embeddings for {len(chunks)} chunks in FAISS")
+    print(f" Stored embeddings for {len(chunks)} chunks in FAISS")
     return model, index, chunks
 
 def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str]) -> str:
@@ -511,7 +511,7 @@ def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, 
     """
     # Retrieve relevant chunks
     retrieved = retrieve_relevant_chunks(query, model, index, chunks)
-    print(f"\n🔎 Retrieved {len(retrieved)} relevant chunks:")
+    print(f"\n Retrieved {len(retrieved)} relevant chunks:")
     
     for i, (chunk, score) in enumerate(retrieved, 1):
         # Show FULL chunk without truncation
@@ -519,7 +519,7 @@ def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, 
         print("---")  # Separator between chunks
     
     # Generate answer
-    print("\n🤖 Generating answer...")
+    print("\n Generating answer...")
     answer = generate_answer(query, retrieved)
     enhanced_answer = enhance_answer_quality(answer, query)
     
@@ -539,11 +539,11 @@ def main():
         model, index, chunks = initialize_qa_system()
 
         # Chat loop
-        print("\n💬 Start chatting with the system! (type 'stop chat' to exit)\n")
+        print("\n Start chatting with the system! (type 'stop chat' to exit)\n")
         while True:
-            query = input("👉 Enter your query: ").strip()
+            query = input(" Enter your query: ").strip()
             if query.lower() in ['stop chat', 'exit', 'quit']:
-                print("👋 Chat ended.")
+                print(" Chat ended.")
                 break
             if not query:
                 print("Please enter a valid query.")
@@ -553,7 +553,7 @@ def main():
             answer = answer_question(query, model, index, chunks)
 
             # Display the answer
-            print("\n📝 Final Answer:\n")
+            print("\nFinal Answer:\n")
             print(answer)
             print("-" * 60)
 
