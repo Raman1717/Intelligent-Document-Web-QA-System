@@ -7,7 +7,7 @@ import os
 st.set_page_config(page_title="Chat with Docs", page_icon="📄", layout="wide")
 
 # Sidebar
-st.sidebar.title("📂 Document / URL Input")
+st.sidebar.title(" Document / URL Input")
 source_type = st.sidebar.radio("Choose source type:", ["Upload File", "Enter URL"])
 
 if source_type == "Upload File":
@@ -19,13 +19,13 @@ if source_type == "Upload File":
         with open(filename, "wb") as f:
             f.write(uploaded_file.getbuffer())
         source = filename
-        st.sidebar.success(f"✅ Uploaded: {uploaded_file.name}")
+        st.sidebar.success(f" Uploaded: {uploaded_file.name}")
     else:
         source = None
 else:
     source = st.sidebar.text_input("Enter a webpage URL")
     if source:
-        st.sidebar.info("🌐 URL entered")
+        st.sidebar.info(" URL entered")
 
 process_btn = st.sidebar.button("Process Source")
 
@@ -36,16 +36,16 @@ if st.sidebar.button("Clear Chat History"):
     st.rerun()
 
 # ---------------- MAIN AREA ----------------
-st.title("💬 Chat with Your Document / URL")
+st.title(" Chat with Your Document / URL")
 st.write("Ask questions based on the uploaded file or entered URL. Supports DOCX, TXT, PDF files and web URLs!")
 
 # Supported formats info
-with st.expander("📋 Supported Formats"):
+with st.expander(" Supported Formats"):
     st.markdown("""
-    - **📄 DOCX** - Microsoft Word documents
-    - **📝 TXT** - Plain text files  
-    - **📚 PDF** - Portable Document Format
-    - **🌐 URLs** - Web pages and online content
+    - ** DOCX** - Microsoft Word documents
+    - ** TXT** - Plain text files  
+    - ** PDF** - Portable Document Format
+    - ** URLs** - Web pages and online content
     """)
 
 # Initialize session state
@@ -62,7 +62,7 @@ if "source_processed" not in st.session_state:
 
 # Process document
 if process_btn and source:
-    with st.spinner("🔄 Processing source..."):
+    with st.spinner("Processing source..."):
         try:
             # Remove existing chunks file to force reprocessing
             if os.path.exists("chunks.pkl"):
@@ -71,14 +71,14 @@ if process_btn and source:
             process_source(source)
             st.session_state.model, st.session_state.index, st.session_state.chunks = initialize_qa_system()
             st.session_state.source_processed = True
-            st.success("✅ Source processed successfully! Start chatting below.")
+            st.success("Source processed successfully! Start chatting below.")
             
             # Show chunk info
             if st.session_state.chunks:
-                st.info(f"📊 Processed {len(st.session_state.chunks)} chunks from the source")
+                st.info(f"Processed {len(st.session_state.chunks)} chunks from the source")
                 
         except Exception as e:
-            st.error(f"❌ Error processing source: {str(e)}")
+            st.error(f"Error processing source: {str(e)}")
             st.session_state.source_processed = False
 
 # ---------------- CHAT INTERFACE ----------------
@@ -91,7 +91,7 @@ if st.session_state.model is not None and st.session_state.source_processed:
             st.chat_message("assistant").markdown(msg["content"])
 
     # Chat input
-    query = st.chat_input("👉 Ask a question about your document...")
+    query = st.chat_input("Ask a question about your document...")
     
     if query:
         # Add user message to chat
@@ -99,7 +99,7 @@ if st.session_state.model is not None and st.session_state.source_processed:
         st.chat_message("user").markdown(query)
 
         # Generate and display assistant response
-        with st.spinner("🤖 Generating answer..."):
+        with st.spinner("Generating answer..."):
             try:
                 answer = answer_question(query, st.session_state.model, st.session_state.index, st.session_state.chunks)
                 
@@ -108,15 +108,15 @@ if st.session_state.model is not None and st.session_state.source_processed:
                 st.chat_message("assistant").markdown(answer)
                 
             except Exception as e:
-                error_msg = f"❌ Error generating answer: {str(e)}"
+                error_msg = f"Error generating answer: {str(e)}"
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
                 st.chat_message("assistant").markdown(error_msg)
 
 else:
     if not st.session_state.source_processed:
-        st.info("ℹ️ Please upload a document or enter a URL from the sidebar and click 'Process Source' to begin.")
+        st.info("Please upload a document or enter a URL from the sidebar and click 'Process Source' to begin.")
     else:
-        st.warning("⚠️ Please process a source document first to start chatting.")
+        st.warning("Please process a source document first to start chatting.")
 
 # Footer
 st.markdown("---")
