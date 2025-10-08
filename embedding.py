@@ -1,80 +1,72 @@
-import re
-import os
-import pickle
-import requests
-import json
-import faiss
-import numpy as np
-import logging
-from docx import Document
-from typing import List, Tuple, Optional, Union
-from sentence_transformers import SentenceTransformer
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+import re 
+import os 
+import pickle 
+import requests 
+import json 
+import faiss 
+import numpy as np 
+import logging 
+from docx import Document 
+from typing import List, Tuple, Optional, Union 
+from sentence_transformers import SentenceTransformer 
+import nltk 
+from nltk.corpus import stopwords 
+from nltk.tokenize import word_tokenize 
+from bs4 import BeautifulSoup 
+from urllib.parse import urlparse 
+import PyPDF2
+import fitz  # PyMuPDF
 
-# ------------------ NLTK DOWNLOAD CHECK ------------------
+# ------------------ NLTK DOWNLOAD CHECK ------------------ 
 try:
     nltk.data.find("tokenizers/punkt")
 except LookupError:
     nltk.download("punkt")
-
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
-
 try:
     nltk.data.find("tokenizers/punkt_tab")
 except LookupError:
     nltk.download("punkt_tab")
 
-# Set up logging
+# Set up logging 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
+# Configuration 
 API_KEY = "AIzaSyDL4T66vw6uN0UgsGBxxuTFqVE9Nes84sQ"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 DEFAULT_TOP_K = 3
 
-# ------------------ TEXT PREPROCESSING FUNCTIONS ------------------
-
+# ------------------ TEXT PREPROCESSING FUNCTIONS ------------------ 
 def preprocess_text(text: str) -> str:
-    """
+    """ 
     Preprocess text by lowercasing, removing stopwords, and keeping only alphanumeric tokens.
     """
     if not text or not isinstance(text, str):
         return ""
-    
     words = word_tokenize(text)
     stop_words = set(stopwords.words("english"))
-    
     filtered_words = [
-        word.lower() for word in words 
-        if word.lower() not in stop_words and word.isalnum()
+        word.lower() for word in words if word.lower() not in stop_words and word.isalnum()
     ]
-    
     return " ".join(filtered_words)
 
-# ------------------ DOCUMENT PROCESSING FUNCTIONS ------------------
-
+# ------------------ DOCUMENT PROCESSING FUNCTIONS ------------------ 
 def clean_paragraph(text: str) -> str:
-    """
+    """ 
     Clean and normalize paragraph text.
     """
     if not text or not isinstance(text, str):
         return None
-    
     cleaned = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    
     return cleaned if cleaned else None
 
 def is_valid_url(url: str) -> bool:
-    """
+    """ 
     Check if the given string is a valid URL.
     """
     try:
@@ -84,26 +76,22 @@ def is_valid_url(url: str) -> bool:
         return False
 
 def scrape_web_content(url: str) -> str:
-    """
+    """ 
     Scrape text content from a web page.
     """
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
-            
             # Remove script and style elements
             for script in soup(["script", "style"]):
                 script.decompose()
-            
             # Get text content
             text = soup.get_text(separator="\n", strip=True)
-            
             # Clean up the text
             lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            chunks = (phrase.strip() for line in lines for phrase in line.split(" "))
             text = ' '.join(chunk for chunk in chunks if chunk)
-            
             logger.info(f"Successfully scraped {len(text)} characters from {url}")
             return text
         else:
@@ -114,33 +102,56 @@ def scrape_web_content(url: str) -> str:
         raise
 
 def validate_file(filename: str) -> None:
-    """
-    Validate that the file exists and is a .docx file.
+    """ 
+    Validate that the file exists and is a supported format.
     """
     if not os.path.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
-    if not filename.lower().endswith('.docx'):
-        raise ValueError(f"File must be a .docx file: {filename}")
+    
+    supported_formats = ('.docx', '.txt', '.pdf')
+    if not filename.lower().endswith(supported_formats):
+        raise ValueError(f"File must be one of {supported_formats}: {filename}")
 
-def extract_chunks_from_docx(filename: str) -> List[str]:
+def extract_chunks_from_other_formats(filename: str) -> List[str]:
     """
-    Extract and dynamically chunk text from a Word document.
+    Extract and dynamically chunk text from .txt or .pdf files.
     """
-    validate_file(filename)
-    doc = Document(filename)
-    all_text = []
-
-    for para in doc.paragraphs:
-        cleaned = clean_paragraph(para.text)
-        if cleaned:
-            all_text.append(cleaned)
-
-    full_text = " ".join(all_text)
-    preprocessed_text = preprocess_text(full_text)
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    file_ext = filename.lower().split('.')[-1]
+    
+    if file_ext == 'txt':
+        # Read text file
+        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+            text_content = f.read()
+    elif file_ext == 'pdf':
+        # Extract text from PDF using PyPDF2
+        text_content = ""
+        try:
+            with open(filename, 'rb') as f:
+                pdf_reader = PyPDF2.PdfReader(f)
+                for page in pdf_reader.pages:
+                    text_content += page.extract_text() + "\n"
+        except Exception as e:
+            logger.error(f"Error reading PDF with PyPDF2: {str(e)}")
+            # Fallback to PyMuPDF if available
+            try:
+                doc = fitz.open(filename)
+                for page in doc:
+                    text_content += page.get_text() + "\n"
+                doc.close()
+            except Exception as e2:
+                logger.error(f"Error reading PDF with PyMuPDF: {str(e2)}")
+                raise Exception(f"Could not extract text from PDF: {str(e)}, {str(e2)}")
+    else:
+        raise ValueError(f"Unsupported file format: {filename}")
+    
+    # Use the same preprocessing and chunking logic as existing functions
+    preprocessed_text = preprocess_text(text_content)
     words = preprocessed_text.split()
     total_words = len(words)
-    
-    logger.info(f"Total words in document after preprocessing: {total_words}")
+    logger.info(f"Total words from {file_ext.upper()} after preprocessing: {total_words}")
     
     if total_words <= 500:
         chunk_size = 100
@@ -155,49 +166,84 @@ def extract_chunks_from_docx(filename: str) -> List[str]:
     for i in range(0, total_words, chunk_size):
         chunk = " ".join(words[i:i + chunk_size])
         chunks.append(chunk)
-    
+        
+    logger.info(f"Created {len(chunks)} chunks from {file_ext.upper()}")
+    return chunks
+
+def extract_chunks_from_docx(filename: str) -> List[str]:
+    """ 
+    Extract and dynamically chunk text from a Word document.
+    """
+    validate_file(filename)
+    doc = Document(filename)
+    all_text = []
+    for para in doc.paragraphs:
+        cleaned = clean_paragraph(para.text)
+        if cleaned:
+            all_text.append(cleaned)
+    full_text = " ".join(all_text)
+    preprocessed_text = preprocess_text(full_text)
+    words = preprocessed_text.split()
+    total_words = len(words)
+    logger.info(f"Total words in document after preprocessing: {total_words}")
+
+    if total_words <= 500:
+        chunk_size = 100
+    elif total_words <= 2000:
+        chunk_size = 250
+    else:
+        chunk_size = 500
+    logger.info(f"Dynamic chunk size set to {chunk_size} words")
+
+    chunks = []
+    for i in range(0, total_words, chunk_size):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
     logger.info(f"Created {len(chunks)} chunks")
     return chunks
 
 def extract_chunks_from_url(url: str) -> List[str]:
-    """
+    """ 
     Extract and dynamically chunk text from a web URL.
     """
     text_content = scrape_web_content(url)
     preprocessed_text = preprocess_text(text_content)
     words = preprocessed_text.split()
     total_words = len(words)
-    
     logger.info(f"Total words from URL after preprocessing: {total_words}")
-    
+
     if total_words <= 500:
         chunk_size = 100
     elif total_words <= 2000:
         chunk_size = 250
     else:
         chunk_size = 500
-        
     logger.info(f"Dynamic chunk size set to {chunk_size} words")
-    
+
     chunks = []
     for i in range(0, total_words, chunk_size):
         chunk = " ".join(words[i:i + chunk_size])
         chunks.append(chunk)
-    
     logger.info(f"Created {len(chunks)} chunks from URL")
     return chunks
 
 def extract_chunks(source: str) -> List[str]:
-    """
+    """ 
     Extract chunks from either a file path or a URL.
     """
     if is_valid_url(source):
         return extract_chunks_from_url(source)
     else:
-        return extract_chunks_from_docx(source)
+        # Check file extension and use appropriate function
+        if source.lower().endswith('.docx'):
+            return extract_chunks_from_docx(source)
+        elif source.lower().endswith(('.txt', '.pdf')):
+            return extract_chunks_from_other_formats(source)
+        else:
+            raise ValueError(f"Unsupported file format: {source}")
 
 def save_chunks_to_file(chunks: List[str], output_file: str = "chunks.pkl") -> None:
-    """
+    """ 
     Save extracted chunks to a pickle file.
     """
     with open(output_file, "wb") as f:
@@ -205,7 +251,7 @@ def save_chunks_to_file(chunks: List[str], output_file: str = "chunks.pkl") -> N
     logger.info(f"Saved {len(chunks)} chunks to {output_file}")
 
 def load_chunks_from_file(input_file: str = "chunks.pkl") -> List[str]:
-    """
+    """ 
     Load chunks from a pickle file.
     """
     with open(input_file, "rb") as f:
@@ -213,32 +259,24 @@ def load_chunks_from_file(input_file: str = "chunks.pkl") -> List[str]:
     logger.info(f"Loaded {len(chunks)} chunks from {input_file}")
     return chunks
 
-# ------------------ EMBEDDING & STORAGE FUNCTIONS ------------------
-
+# ------------------ EMBEDDING & STORAGE FUNCTIONS ------------------ 
 def create_embeddings(chunks: List[str]) -> Tuple[SentenceTransformer, np.ndarray]:
-    """
+    """ 
     Create embeddings for text chunks using SentenceTransformer.
     """
     try:
         model = SentenceTransformer("BAAI/bge-base-en-v1.5")
-        
         embeddings = model.encode(
-            chunks, 
-            convert_to_numpy=True, 
-            show_progress_bar=True,
-            batch_size=32,
-            normalize_embeddings=True
+            chunks, convert_to_numpy=True, show_progress_bar=True, batch_size=32, normalize_embeddings=True
         ).astype("float32")
-        
         logger.info(f"Successfully embedded {len(chunks)} chunks with dimension {embeddings.shape[1]}")
         return model, embeddings
-        
     except Exception as e:
         logger.error(f"Error in create_embeddings: {str(e)}")
         raise
 
 def create_faiss_index(embeddings: np.ndarray) -> faiss.Index:
-    """
+    """ 
     Create a FAISS index from embeddings.
     """
     dim = embeddings.shape[1]
@@ -248,54 +286,49 @@ def create_faiss_index(embeddings: np.ndarray) -> faiss.Index:
     return index
 
 def embed_and_store(chunks: List[str]) -> Tuple[SentenceTransformer, faiss.Index, np.ndarray]:
-    """
+    """ 
     Complete pipeline: embed chunks and store them in a FAISS index.
     """
     model, embeddings = create_embeddings(chunks)
     index = create_faiss_index(embeddings)
     return model, index, embeddings
 
-# ------------------ RETRIEVAL FUNCTIONS ------------------
-
-def retrieve_relevant_chunks(query: str, model: SentenceTransformer, index: faiss.Index, 
-                           chunks: List[str], top_k: int = DEFAULT_TOP_K) -> List[Tuple[str, float]]:
-    """
+# ------------------ RETRIEVAL FUNCTIONS ------------------ 
+def retrieve_relevant_chunks(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str], top_k: int = DEFAULT_TOP_K) -> List[Tuple[str, float]]:
+    """ 
     Retrieve the most relevant chunks for a query with their similarity scores.
+    Returns FULL chunks without truncation.
     """
     try:
         preprocessed_query = preprocess_text(query)
         query_vec = model.encode([preprocessed_query], convert_to_numpy=True, normalize_embeddings=True).astype("float32")
-        
         D, I = index.search(query_vec, top_k)
         
         retrieved = []
         for idx, score in zip(I[0], D[0]):
             if score > 0.15:
-                retrieved.append((chunks[idx], float(score)))
+                retrieved.append((chunks[idx], float(score)))  # Full chunk, no truncation
         
         retrieved.sort(key=lambda x: x[1], reverse=True)
         
         if not retrieved and I.size > 0:
             for i in range(min(3, len(I[0]))):
-                retrieved.append((chunks[I[0][i]], float(D[0][i])))
-            
-        return retrieved[:top_k]
+                retrieved.append((chunks[I[0][i]], float(D[0][i])))  # Full chunk, no truncation
         
+        return retrieved[:top_k]
     except Exception as e:
         logger.error(f"Error in retrieve_relevant_chunks: {str(e)}")
         return []
 
-# ------------------ PROMPT ENGINEERING FUNCTIONS ------------------
-
+# ------------------ PROMPT ENGINEERING FUNCTIONS ------------------ 
 def construct_enhanced_prompt(query: str, retrieved_chunks: List[Tuple[str, float]]) -> str:
-    """
+    """ 
     Construct a prompt for the LLM that allows mixed formatting:
     - Paragraphs (50–120 words each)
     - Points only when the query explicitly requires it
     """
     if not retrieved_chunks:
         return f"""Answer the following question based on your general knowledge.
-
 Question: {query}
 
 FORMAT RULES:
@@ -316,9 +349,8 @@ FORMAT RULES:
 
     # Detect if list structure is needed
     list_indicators = [
-        "list", "steps", "ways", "methods", "types", "advantages",
-        "disadvantages", "benefits", "features", "points", "factors",
-        "arguments", "grounds", "reasons", "differences"
+        "list", "steps", "ways", "methods", "types", "advantages", "disadvantages", 
+        "benefits", "features", "points", "factors", "arguments", "grounds", "reasons", "differences"
     ]
     requires_list_format = any(word in query.lower() for word in list_indicators)
 
@@ -331,7 +363,7 @@ CRITICAL INSTRUCTIONS:
 
 FORMAT RULES:
 - Use **bold headings** only for section titles (not every line).
-- Paragraphs should be in 10 – 300 words depend upon the chunks provied to you so pls see all the chunks provide to you then see the query then genrate the ans and  then see it should below 120 words . 
+- Paragraphs should be in 10 – 300 words depend upon the chunks provied to you so pls see all the chunks provide to you then see the query then genrate the ans and then see it should below 120 words .
 - If the question requires a list (e.g., types, steps, advantages), use bullet/numbered points.
 - Otherwise, write in paragraphs.
 - Highlight key terms in **bold**.
@@ -339,8 +371,7 @@ FORMAT RULES:
 CONTEXT (with relevance scores):
 {context}
 
-QUESTION:
-{query}
+QUESTION: {query}
 
 Now provide the final answer following the formatting rules.
 """
@@ -352,10 +383,9 @@ Now provide the final answer following the formatting rules.
 
     return prompt
 
-# ------------------ LLM INTERACTION FUNCTIONS ------------------
-
+# ------------------ LLM INTERACTION FUNCTIONS ------------------ 
 def call_gemini_api(prompt: str) -> str:
-    """
+    """ 
     Make API call to Gemini LLM.
     """
     headers = {"Content-Type": "application/json"}
@@ -379,24 +409,18 @@ def call_gemini_api(prompt: str) -> str:
             }
         ]
     }
-
     try:
         response = requests.post(API_URL, headers=headers, data=json.dumps(data), timeout=60)
         response.raise_for_status()
-        
         output = response.json()
         try:
             answer = output["candidates"][0]["content"]["parts"][0]["text"].strip()
-            
             if not answer or len(answer) < 10:
                 return "I couldn't generate a satisfactory answer based on the available information. Please try rephrasing your question."
-            
             return answer
-            
         except (KeyError, IndexError):
             logger.warning("Unexpected response format from Gemini API")
             return "I received an unexpected response format from the AI service. Please try again."
-            
     except requests.exceptions.Timeout:
         logger.error("Request to Gemini API timed out")
         return "The AI service is taking too long to respond. Please try again later."
@@ -405,16 +429,15 @@ def call_gemini_api(prompt: str) -> str:
         return f"Sorry, I encountered an error connecting to the AI service: {str(e)}"
 
 def generate_answer(query: str, retrieved_chunks: List[Tuple[str, float]]) -> str:
-    """
+    """ 
     Generate an answer using the Gemini API based on retrieved context.
     """
     prompt = construct_enhanced_prompt(query, retrieved_chunks)
     return call_gemini_api(prompt)
 
-# ------------------ ANSWER PROCESSING FUNCTIONS ------------------
-
+# ------------------ ANSWER PROCESSING FUNCTIONS ------------------ 
 def enhance_answer_quality(answer: str, query: str) -> str:
-    """
+    """ 
     Post-process the generated answer to ensure formatting consistency:
     - Paragraphs of ~50–120 words
     - Clean bold headings
@@ -457,11 +480,9 @@ def enhance_answer_quality(answer: str, query: str) -> str:
 
     return "\n\n".join(new_paragraphs)
 
-
-# ------------------ MAIN APPLICATION FUNCTIONS ------------------
-
+# ------------------ MAIN APPLICATION FUNCTIONS ------------------ 
 def process_source(source: str) -> List[str]:
-    """
+    """ 
     Complete source processing pipeline for either file or URL.
     """
     if is_valid_url(source):
@@ -469,14 +490,13 @@ def process_source(source: str) -> List[str]:
         chunks = extract_chunks_from_url(source)
     else:
         print("📄 Processing document...")
-        chunks = extract_chunks_from_docx(source)
-    
+        chunks = extract_chunks(source)  # This will handle all file formats now
     save_chunks_to_file(chunks)
     print(f"✅ Extracted {len(chunks)} chunks and saved to chunks.pkl")
     return chunks
 
 def initialize_qa_system() -> Tuple[SentenceTransformer, faiss.Index, List[str]]:
-    """
+    """ 
     Initialize the QA system by loading chunks and creating embeddings.
     """
     print("🔄 Loading and embedding chunks...")
@@ -486,16 +506,18 @@ def initialize_qa_system() -> Tuple[SentenceTransformer, faiss.Index, List[str]]
     return model, index, chunks
 
 def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str]) -> str:
-    """
+    """ 
     Complete QA pipeline for a single question.
     """
     # Retrieve relevant chunks
     retrieved = retrieve_relevant_chunks(query, model, index, chunks)
     print(f"\n🔎 Retrieved {len(retrieved)} relevant chunks:")
+    
     for i, (chunk, score) in enumerate(retrieved, 1):
-        preview = chunk[:100] + "..." if len(chunk) > 100 else chunk
-        print(f"{i}. [Score: {score:.3f}] {preview}")
-
+        # Show FULL chunk without truncation
+        print(f"{i}. [Score: {score:.3f}] {chunk}")
+        print("---")  # Separator between chunks
+    
     # Generate answer
     print("\n🤖 Generating answer...")
     answer = generate_answer(query, retrieved)
@@ -508,11 +530,11 @@ def main():
     try:
         # Check if we need to process a source
         if not os.path.exists("chunks.pkl"):
-            source = input("Enter the path to your .docx file or a URL: ").strip()
+            source = input("Enter the path to your .docx/.txt/.pdf file or a URL: ").strip()
             if not source:
                 source = "sample.docx"
             process_source(source)
-        
+
         # Initialize the QA system
         model, index, chunks = initialize_qa_system()
 
@@ -523,19 +545,18 @@ def main():
             if query.lower() in ['stop chat', 'exit', 'quit']:
                 print("👋 Chat ended.")
                 break
-                
             if not query:
                 print("Please enter a valid query.")
                 continue
 
             # Process the query
             answer = answer_question(query, model, index, chunks)
-            
+
             # Display the answer
             print("\n📝 Final Answer:\n")
             print(answer)
             print("-" * 60)
-            
+
     except FileNotFoundError:
         logger.error("Document file or chunks.pkl not found")
         print("Error: File not found. Please check the file path.")
