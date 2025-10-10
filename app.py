@@ -1,6 +1,6 @@
 # app.py
 import streamlit as st
-from embedding import process_source, initialize_qa_system, answer_question
+from embedding_HF import process_source, initialize_qa_system, answer_question
 import os
 
 # ---------------- STREAMLIT CONFIG ----------------
