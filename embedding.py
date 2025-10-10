@@ -40,30 +40,32 @@ API_KEY = "AIzaSyDL4T66vw6uN0UgsGBxxuTFqVE9Nes84sQ"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 DEFAULT_TOP_K = 3
 
-# ------------------ TEXT PREPROCESSING FUNCTIONS ------------------ 
-def preprocess_text(text: str) -> str:
+# ------------------- Phase 1 — Document Ingestion & Chunking ----------------------------
+def process_source(source: str) -> List[str]:
     """ 
-    Preprocess text by lowercasing, removing stopwords, and keeping only alphanumeric tokens.
+    Complete source processing pipeline for either file or URL.
     """
-    if not text or not isinstance(text, str):
-        return ""
-    words = word_tokenize(text)
-    stop_words = set(stopwords.words("english"))
-    filtered_words = [
-        word.lower() for word in words if word.lower() not in stop_words and word.isalnum()
-    ]
-    return " ".join(filtered_words)
 
-# ------------------ DOCUMENT PROCESSING FUNCTIONS ------------------ 
-def clean_paragraph(text: str) -> str:
+    print(" Processing document and URL ...")
+    chunks = extract_chunks(source)  # This will handle all file formats now
+    save_chunks_to_file(chunks)
+    print(f"Extracted {len(chunks)} chunks and saved to chunks.pkl")
+    return chunks
+
+def extract_chunks(source: str) -> List[str]:
     """ 
-    Clean and normalize paragraph text.
+    Extract chunks from either a file path or a URL.
     """
-    if not text or not isinstance(text, str):
-        return None
-    cleaned = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned if cleaned else None
+    if is_valid_url(source):
+        return extract_chunks_from_url(source)
+    else:
+        # Check file extension and use appropriate function
+        if source.lower().endswith('.docx'):
+            return extract_chunks_from_docx(source)
+        elif source.lower().endswith(('.txt', '.pdf')):
+            return extract_chunks_from_other_formats(source)
+        else:
+            raise ValueError(f"Unsupported file format: {source}")
 
 def is_valid_url(url: str) -> bool:
     """ 
@@ -74,6 +76,34 @@ def is_valid_url(url: str) -> bool:
         return all([result.scheme, result.netloc])
     except:
         return False
+
+def extract_chunks_from_url(url: str) -> List[str]:
+    """ 
+    Extract and dynamically chunk text from a web URL.
+    """
+    text_content = scrape_web_content(url)
+    cleaned_text = clean_paragraph(text_content)
+    text_content = cleaned_text if cleaned_text else ""
+
+    preprocessed_text = preprocess_text(text_content)
+    words = preprocessed_text.split()
+    total_words = len(words)
+    logger.info(f"Total words from URL after preprocessing: {total_words}")
+
+    if total_words <= 500:
+        chunk_size = 100
+    elif total_words <= 2000:
+        chunk_size = 250
+    else:
+        chunk_size = 500
+    logger.info(f"Dynamic chunk size set to {chunk_size} words")
+
+    chunks = []
+    for i in range(0, total_words, chunk_size):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
+    logger.info(f"Created {len(chunks)} chunks from URL")
+    return chunks
 
 def scrape_web_content(url: str) -> str:
     """ 
@@ -101,74 +131,29 @@ def scrape_web_content(url: str) -> str:
         logger.error(f"Error scraping web content: {str(e)}")
         raise
 
-def validate_file(filename: str) -> None:
+def clean_paragraph(text: str) -> str:
     """ 
-    Validate that the file exists and is a supported format.
+    Clean and normalize paragraph text.
     """
-    if not os.path.exists(filename):
-        raise FileNotFoundError(f"File not found: {filename}")
-    
-    supported_formats = ('.docx', '.txt', '.pdf')
-    if not filename.lower().endswith(supported_formats):
-        raise ValueError(f"File must be one of {supported_formats}: {filename}")
+    if not text or not isinstance(text, str):
+        return None
+    cleaned = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned if cleaned else None
 
-def extract_chunks_from_other_formats(filename: str) -> List[str]:
+
+def preprocess_text(text: str) -> str:
+    """ 
+    Preprocess text by lowercasing, removing stopwords, and keeping only alphanumeric tokens.
     """
-    Extract and dynamically chunk text from .txt or .pdf files.
-    """
-    if not os.path.exists(filename):
-        raise FileNotFoundError(f"File not found: {filename}")
-    
-    file_ext = filename.lower().split('.')[-1]
-    
-    if file_ext == 'txt':
-        # Read text file
-        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
-            text_content = f.read()
-    elif file_ext == 'pdf':
-        # Extract text from PDF using PyPDF2
-        text_content = ""
-        try:
-            with open(filename, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                for page in pdf_reader.pages:
-                    text_content += page.extract_text() + "\n"
-        except Exception as e:
-            logger.error(f"Error reading PDF with PyPDF2: {str(e)}")
-            # Fallback to PyMuPDF if available
-            try:
-                doc = fitz.open(filename)
-                for page in doc:
-                    text_content += page.get_text() + "\n"
-                doc.close()
-            except Exception as e2:
-                logger.error(f"Error reading PDF with PyMuPDF: {str(e2)}")
-                raise Exception(f"Could not extract text from PDF: {str(e)}, {str(e2)}")
-    else:
-        raise ValueError(f"Unsupported file format: {filename}")
-    
-    # Use the same preprocessing and chunking logic as existing functions
-    preprocessed_text = preprocess_text(text_content)
-    words = preprocessed_text.split()
-    total_words = len(words)
-    logger.info(f"Total words from {file_ext.upper()} after preprocessing: {total_words}")
-    
-    if total_words <= 500:
-        chunk_size = 100
-    elif total_words <= 2000:
-        chunk_size = 250
-    else:
-        chunk_size = 500
-        
-    logger.info(f"Dynamic chunk size set to {chunk_size} words")
-    
-    chunks = []
-    for i in range(0, total_words, chunk_size):
-        chunk = " ".join(words[i:i + chunk_size])
-        chunks.append(chunk)
-        
-    logger.info(f"Created {len(chunks)} chunks from {file_ext.upper()}")
-    return chunks
+    if not text or not isinstance(text, str):
+        return ""
+    words = word_tokenize(text)
+    stop_words = set(stopwords.words("english"))
+    filtered_words = [
+        word.lower() for word in words if word.lower() not in stop_words and word.isalnum()
+    ]
+    return " ".join(filtered_words)
 
 def extract_chunks_from_docx(filename: str) -> List[str]:
     """ 
@@ -202,45 +187,88 @@ def extract_chunks_from_docx(filename: str) -> List[str]:
     logger.info(f"Created {len(chunks)} chunks")
     return chunks
 
-def extract_chunks_from_url(url: str) -> List[str]:
+def validate_file(filename: str) -> None:
     """ 
-    Extract and dynamically chunk text from a web URL.
+    Validate that the file exists and is a supported format.
     """
-    text_content = scrape_web_content(url)
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    supported_formats = ('.docx', '.txt', '.pdf')
+    if not filename.lower().endswith(supported_formats):
+        raise ValueError(f"File must be one of {supported_formats}: {filename}")
+
+
+def extract_chunks_from_other_formats(filename: str) -> List[str]:
+    """
+    Extract and dynamically chunk text from .txt or .pdf files.
+    """
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    file_ext = filename.lower().split('.')[-1]
+    
+    if file_ext == 'txt':
+        # Read text file
+        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+            text_content = f.read()
+    elif file_ext == 'pdf':
+        # Extract text from PDF using PyPDF2
+        text_content = ""
+        try:
+            with open(filename, 'rb') as f:
+                pdf_reader = PyPDF2.PdfReader(f)
+                for page in pdf_reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        cleaned = clean_paragraph(page_text)
+                        if cleaned:
+                            text_content += cleaned + "\n"
+        except Exception as e:
+            logger.error(f"Error reading PDF with PyPDF2: {str(e)}")
+            # Fallback to PyMuPDF if available
+            try:
+                doc = fitz.open(filename)
+                for page in doc:
+                    page_text = page.get_text()
+                    if page_text:
+                        cleaned = clean_paragraph(page_text)
+                        if cleaned:
+                            text_content += cleaned + "\n"
+                doc.close()
+            except Exception as e2:
+                logger.error(f"Error reading PDF with PyMuPDF: {str(e2)}")
+                raise Exception(f"Could not extract text from PDF: {str(e)}, {str(e2)}")
+    else:
+        raise ValueError(f"Unsupported file format: {filename}")
+    
+    # Clean paragraph for .txt as well
+    if file_ext == 'txt':
+        cleaned_text = clean_paragraph(text_content)
+        text_content = cleaned_text if cleaned_text else ""
+
+    # Use the same preprocessing and chunking logic as existing functions
     preprocessed_text = preprocess_text(text_content)
     words = preprocessed_text.split()
     total_words = len(words)
-    logger.info(f"Total words from URL after preprocessing: {total_words}")
-
+    logger.info(f"Total words from {file_ext.upper()} after preprocessing: {total_words}")
+    
     if total_words <= 500:
         chunk_size = 100
     elif total_words <= 2000:
         chunk_size = 250
     else:
         chunk_size = 500
+        
     logger.info(f"Dynamic chunk size set to {chunk_size} words")
-
+    
     chunks = []
     for i in range(0, total_words, chunk_size):
         chunk = " ".join(words[i:i + chunk_size])
         chunks.append(chunk)
-    logger.info(f"Created {len(chunks)} chunks from URL")
+        
+    logger.info(f"Created {len(chunks)} chunks from {file_ext.upper()}")
     return chunks
-
-def extract_chunks(source: str) -> List[str]:
-    """ 
-    Extract chunks from either a file path or a URL.
-    """
-    if is_valid_url(source):
-        return extract_chunks_from_url(source)
-    else:
-        # Check file extension and use appropriate function
-        if source.lower().endswith('.docx'):
-            return extract_chunks_from_docx(source)
-        elif source.lower().endswith(('.txt', '.pdf')):
-            return extract_chunks_from_other_formats(source)
-        else:
-            raise ValueError(f"Unsupported file format: {source}")
 
 def save_chunks_to_file(chunks: List[str], output_file: str = "chunks.pkl") -> None:
     """ 
@@ -249,6 +277,19 @@ def save_chunks_to_file(chunks: List[str], output_file: str = "chunks.pkl") -> N
     with open(output_file, "wb") as f:
         pickle.dump(chunks, f)
     logger.info(f"Saved {len(chunks)} chunks to {output_file}")
+
+#   -------------------------------- Phase 2 — Embedding & Indexing ----------------------------------
+
+def initialize_qa_system() -> Tuple[SentenceTransformer, faiss.Index, List[str]]:
+    """ 
+    Initialize the QA system by loading chunks and creating embeddings.
+    """
+    print("Loading and embedding chunks...")
+    chunks = load_chunks_from_file()
+    model, index, embeddings = embed_and_store(chunks)
+    print(f"Stored embeddings for {len(chunks)} chunks in FAISS")
+    return model, index, chunks
+
 
 def load_chunks_from_file(input_file: str = "chunks.pkl") -> List[str]:
     """ 
@@ -259,7 +300,14 @@ def load_chunks_from_file(input_file: str = "chunks.pkl") -> List[str]:
     logger.info(f"Loaded {len(chunks)} chunks from {input_file}")
     return chunks
 
-# ------------------ EMBEDDING & STORAGE FUNCTIONS ------------------ 
+def embed_and_store(chunks: List[str]) -> Tuple[SentenceTransformer, faiss.Index, np.ndarray]:
+    """ 
+    Complete pipeline: embed chunks and store them in a FAISS index.
+    """
+    model, embeddings = create_embeddings(chunks)
+    index = create_faiss_index(embeddings)
+    return model, index, embeddings
+
 def create_embeddings(chunks: List[str]) -> Tuple[SentenceTransformer, np.ndarray]:
     """ 
     Create embeddings for text chunks using SentenceTransformer.
@@ -285,15 +333,28 @@ def create_faiss_index(embeddings: np.ndarray) -> faiss.Index:
     logger.info(f"Created FAISS index with dimension {dim}")
     return index
 
-def embed_and_store(chunks: List[str]) -> Tuple[SentenceTransformer, faiss.Index, np.ndarray]:
-    """ 
-    Complete pipeline: embed chunks and store them in a FAISS index.
-    """
-    model, embeddings = create_embeddings(chunks)
-    index = create_faiss_index(embeddings)
-    return model, index, embeddings
+#   ------------------------------ Phase 3 — Retrieval & Answer Generation ---------------------------
 
-# ------------------ RETRIEVAL FUNCTIONS ------------------ 
+def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str]) -> str:
+    """ 
+    Complete QA pipeline for a single question.
+    """
+    # Retrieve relevant chunks
+    retrieved = retrieve_relevant_chunks(query, model, index, chunks)
+    print(f"\nRetrieved {len(retrieved)} relevant chunks:")
+    
+    for i, (chunk, score) in enumerate(retrieved, 1):
+        # Show FULL chunk without truncation
+        print(f"{i}. [Score: {score:.3f}] {chunk}")
+        print("---")  # Separator between chunks
+    
+    # Generate answer
+    print("\nGenerating answer...")
+    answer = generate_answer(query, retrieved)
+    enhanced_answer = enhance_answer_quality(answer, query)
+    
+    return enhanced_answer
+
 def retrieve_relevant_chunks(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str], top_k: int = DEFAULT_TOP_K) -> List[Tuple[str, float]]:
     """ 
     Retrieve the most relevant chunks for a query with their similarity scores.
@@ -319,8 +380,14 @@ def retrieve_relevant_chunks(query: str, model: SentenceTransformer, index: fais
     except Exception as e:
         logger.error(f"Error in retrieve_relevant_chunks: {str(e)}")
         return []
-
-# ------------------ PROMPT ENGINEERING FUNCTIONS ------------------ 
+    
+def generate_answer(query: str, retrieved_chunks: List[Tuple[str, float]]) -> str:
+    """ 
+    Generate an answer using the Gemini API based on retrieved context.
+    """
+    prompt = construct_enhanced_prompt(query, retrieved_chunks)
+    return call_gemini_api(prompt)
+ 
 def construct_enhanced_prompt(query: str, retrieved_chunks: List[Tuple[str, float]]) -> str:
     """ 
     Construct a prompt for the LLM that allows mixed formatting:
@@ -383,7 +450,6 @@ Now provide the final answer following the formatting rules.
 
     return prompt
 
-# ------------------ LLM INTERACTION FUNCTIONS ------------------ 
 def call_gemini_api(prompt: str) -> str:
     """ 
     Make API call to Gemini LLM.
@@ -428,14 +494,7 @@ def call_gemini_api(prompt: str) -> str:
         logger.error(f"Request to Gemini API failed: {str(e)}")
         return f"Sorry, I encountered an error connecting to the AI service: {str(e)}"
 
-def generate_answer(query: str, retrieved_chunks: List[Tuple[str, float]]) -> str:
-    """ 
-    Generate an answer using the Gemini API based on retrieved context.
-    """
-    prompt = construct_enhanced_prompt(query, retrieved_chunks)
-    return call_gemini_api(prompt)
 
-# ------------------ ANSWER PROCESSING FUNCTIONS ------------------ 
 def enhance_answer_quality(answer: str, query: str) -> str:
     """ 
     Post-process the generated answer to ensure formatting consistency:
@@ -480,50 +539,9 @@ def enhance_answer_quality(answer: str, query: str) -> str:
 
     return "\n\n".join(new_paragraphs)
 
-# ------------------ MAIN APPLICATION FUNCTIONS ------------------ 
-def process_source(source: str) -> List[str]:
-    """ 
-    Complete source processing pipeline for either file or URL.
-    """
-    if is_valid_url(source):
-        print(" Processing web URL...")
-        chunks = extract_chunks_from_url(source)
-    else:
-        print(" Processing document...")
-        chunks = extract_chunks(source)  # This will handle all file formats now
-    save_chunks_to_file(chunks)
-    print(f"Extracted {len(chunks)} chunks and saved to chunks.pkl")
-    return chunks
+# ----------------------------------------------------------------------------------------------------- ------------------ 
 
-def initialize_qa_system() -> Tuple[SentenceTransformer, faiss.Index, List[str]]:
-    """ 
-    Initialize the QA system by loading chunks and creating embeddings.
-    """
-    print("Loading and embedding chunks...")
-    chunks = load_chunks_from_file()
-    model, index, embeddings = embed_and_store(chunks)
-    print(f" Stored embeddings for {len(chunks)} chunks in FAISS")
-    return model, index, chunks
 
-def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str]) -> str:
-    """ 
-    Complete QA pipeline for a single question.
-    """
-    # Retrieve relevant chunks
-    retrieved = retrieve_relevant_chunks(query, model, index, chunks)
-    print(f"\n Retrieved {len(retrieved)} relevant chunks:")
-    
-    for i, (chunk, score) in enumerate(retrieved, 1):
-        # Show FULL chunk without truncation
-        print(f"{i}. [Score: {score:.3f}] {chunk}")
-        print("---")  # Separator between chunks
-    
-    # Generate answer
-    print("\n Generating answer...")
-    answer = generate_answer(query, retrieved)
-    enhanced_answer = enhance_answer_quality(answer, query)
-    
-    return enhanced_answer
 
 def main():
     """Main function to run the complete QA system."""
@@ -539,11 +557,11 @@ def main():
         model, index, chunks = initialize_qa_system()
 
         # Chat loop
-        print("\n Start chatting with the system! (type 'stop chat' to exit)\n")
+        print("\nStart chatting with the system! (type 'stop chat' to exit)\n")
         while True:
-            query = input(" Enter your query: ").strip()
+            query = input("Enter your query: ").strip()
             if query.lower() in ['stop chat', 'exit', 'quit']:
-                print(" Chat ended.")
+                print("Chat ended.")
                 break
             if not query:
                 print("Please enter a valid query.")
