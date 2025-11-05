@@ -4,7 +4,7 @@ import os
 import logging
 from werkzeug.utils import secure_filename
 
-# Import your embedding.py functions
+# Import your embedding.py functionss
 import embedding
 
 # Set up logging
