@@ -7,7 +7,7 @@ import faiss
 import numpy as np 
 import logging 
 from docx import Document 
-from typing import List, Tuple, Optional, Union 
+from typing import List, Tuple, Optional, Union, Dict, Any
 from sentence_transformers import SentenceTransformer 
 import nltk 
 from nltk.corpus import stopwords 
@@ -16,6 +16,10 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse 
 import PyPDF2
 import fitz  # PyMuPDF
+import mysql.connector
+from mysql.connector import Error
+import uuid
+from datetime import datetime
 
 # ------------------ NLTK DOWNLOAD CHECK ------------------ 
 try:
@@ -40,17 +44,215 @@ API_KEY = "AIzaSyDL4T66vw6uN0UgsGBxxuTFqVE9Nes84sQ"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 DEFAULT_TOP_K = 3
 
+# Database configuration - UPDATE THESE WITH YOUR MYSQL CREDENTIALS
+DB_CONFIG = {
+    'host': 'localhost',
+    'user': 'root',
+    'password': 'Raman@mysql',  # Change this to your MySQL password
+    'database': 'rag_chat_system'
+}
+
+# ------------------ Database Functions ------------------
+
+def get_db_connection():
+    """Create and return database connection"""
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        return connection
+    except Error as e:
+        logger.error(f"Error connecting to MySQL database: {e}")
+        return None
+
+def create_chat_session(document_source: str, chunks: List[str]) -> str:
+    """Create a new chat session and store chunks in database"""
+    session_id = str(uuid.uuid4())
+    connection = get_db_connection()
+    if not connection:
+        logger.error("Failed to connect to database")
+        return None
+    
+    try:
+        cursor = connection.cursor()
+        
+        # Insert session
+        cursor.execute(
+            "INSERT INTO chat_sessions (session_id, document_source, chunk_count) VALUES (%s, %s, %s)",
+            (session_id, document_source, len(chunks))
+        )
+        
+        # Insert chunks
+        chunk_data = [(session_id, i, chunk) for i, chunk in enumerate(chunks)]
+        cursor.executemany(
+            "INSERT INTO session_chunks (session_id, chunk_index, chunk_text) VALUES (%s, %s, %s)",
+            chunk_data
+        )
+        
+        connection.commit()
+        logger.info(f"Created chat session {session_id} with {len(chunks)} chunks")
+        return session_id
+        
+    except Error as e:
+        logger.error(f"Error creating chat session: {e}")
+        return None
+    finally:
+        if connection and connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def save_chat_message(session_id: str, message_type: str, content: str, retrieved_chunks: List[Dict] = None):
+    """Save a chat message to database"""
+    connection = get_db_connection()
+    if not connection:
+        return False
+    
+    try:
+        cursor = connection.cursor()
+        
+        # Convert retrieved chunks to JSON
+        chunks_json = json.dumps(retrieved_chunks) if retrieved_chunks else None
+        
+        cursor.execute(
+            "INSERT INTO chat_messages (session_id, message_type, content, retrieved_chunks) VALUES (%s, %s, %s, %s)",
+            (session_id, message_type, content, chunks_json)
+        )
+        
+        connection.commit()
+        logger.info(f"Saved {message_type} message to session {session_id}")
+        return True
+        
+    except Error as e:
+        logger.error(f"Error saving chat message: {e}")
+        return False
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def get_chat_sessions() -> List[Dict]:
+    """Get all chat sessions ordered by latest first"""
+    connection = get_db_connection()
+    if not connection:
+        return []
+    
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT session_id, document_source, chunk_count, created_at, updated_at "
+            "FROM chat_sessions ORDER BY updated_at DESC"
+        )
+        sessions = cursor.fetchall()
+        
+        # Convert datetime objects to strings for JSON serialization
+        for session in sessions:
+            session['created_at'] = session['created_at'].isoformat() if session['created_at'] else None
+            session['updated_at'] = session['updated_at'].isoformat() if session['updated_at'] else None
+            
+        return sessions
+        
+    except Error as e:
+        logger.error(f"Error fetching chat sessions: {e}")
+        return []
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def get_chat_history(session_id: str) -> List[Dict]:
+    """Get chat history for a specific session"""
+    connection = get_db_connection()
+    if not connection:
+        return []
+    
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT message_type, content, retrieved_chunks, created_at "
+            "FROM chat_messages WHERE session_id = %s ORDER BY created_at ASC",
+            (session_id,)
+        )
+        messages = cursor.fetchall()
+        
+        # Parse JSON fields and convert datetime
+        for message in messages:
+            if message['retrieved_chunks']:
+                message['retrieved_chunks'] = json.loads(message['retrieved_chunks'])
+            message['created_at'] = message['created_at'].isoformat() if message['created_at'] else None
+            
+        return messages
+        
+    except Error as e:
+        logger.error(f"Error fetching chat history: {e}")
+        return []
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def get_session_chunks(session_id: str) -> List[str]:
+    """Get chunks for a specific session"""
+    connection = get_db_connection()
+    if not connection:
+        return []
+    
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT chunk_text FROM session_chunks WHERE session_id = %s ORDER BY chunk_index ASC",
+            (session_id,)
+        )
+        chunks = [row[0] for row in cursor.fetchall()]
+        return chunks
+        
+    except Error as e:
+        logger.error(f"Error fetching session chunks: {e}")
+        return []
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def delete_chat_session(session_id: str) -> bool:
+    """Delete a chat session and all related data"""
+    connection = get_db_connection()
+    if not connection:
+        return False
+    
+    try:
+        cursor = connection.cursor()
+        cursor.execute("DELETE FROM chat_sessions WHERE session_id = %s", (session_id,))
+        connection.commit()
+        logger.info(f"Deleted chat session {session_id}")
+        return True
+        
+    except Error as e:
+        logger.error(f"Error deleting chat session: {e}")
+        return False
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
 # ------------------- Phase 1 — Document Ingestion & Chunking ----------------------------
-def process_source(source: str) -> List[str]:
+
+def process_source(source: str, session_id: str = None) -> Tuple[List[str], str]:
     """ 
     Complete source processing pipeline for either file or URL.
+    Returns chunks and session_id.
     """
-
     print(" Processing document and URL ...")
-    chunks = extract_chunks(source)  # This will handle all file formats now
+    chunks = extract_chunks(source)
+    
+    # Create new session if not provided
+    if not session_id:
+        session_id = create_chat_session(source, chunks)
+        if not session_id:
+            logger.error("Failed to create chat session, using local storage only")
+    
     save_chunks_to_file(chunks)
     print(f"Extracted {len(chunks)} chunks and saved to chunks.pkl")
-    return chunks
+    if session_id:
+        print(f"Session ID: {session_id}")
+    return chunks, session_id
 
 def extract_chunks(source: str) -> List[str]:
     """ 
@@ -141,7 +343,6 @@ def clean_paragraph(text: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned if cleaned else None
 
-
 def preprocess_text(text: str) -> str:
     """ 
     Preprocess text by lowercasing, removing stopwords, and keeping only alphanumeric tokens.
@@ -197,7 +398,6 @@ def validate_file(filename: str) -> None:
     supported_formats = ('.docx', '.txt', '.pdf')
     if not filename.lower().endswith(supported_formats):
         raise ValueError(f"File must be one of {supported_formats}: {filename}")
-
 
 def extract_chunks_from_other_formats(filename: str) -> List[str]:
     """
@@ -290,6 +490,21 @@ def initialize_qa_system() -> Tuple[SentenceTransformer, faiss.Index, List[str]]
     print(f"Stored embeddings for {len(chunks)} chunks in FAISS")
     return model, index, chunks
 
+def initialize_qa_system_from_session(session_id: str) -> Tuple[SentenceTransformer, faiss.Index, List[str]]:
+    """Initialize QA system from a specific session"""
+    print(f"Loading session {session_id}...")
+    
+    # Get chunks from database
+    chunks = get_session_chunks(session_id)
+    if not chunks:
+        raise ValueError(f"No chunks found for session {session_id}")
+    
+    # Create embeddings and index
+    model, embeddings = create_embeddings(chunks)
+    index = create_faiss_index(embeddings)
+    
+    print(f"Loaded {len(chunks)} chunks from session {session_id}")
+    return model, index, chunks
 
 def load_chunks_from_file(input_file: str = "chunks.pkl") -> List[str]:
     """ 
@@ -335,9 +550,9 @@ def create_faiss_index(embeddings: np.ndarray) -> faiss.Index:
 
 #   ------------------------------ Phase 3 — Retrieval & Answer Generation ---------------------------
 
-def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str]) -> str:
+def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str], session_id: str = None) -> str:
     """ 
-    Complete QA pipeline for a single question.
+    Complete QA pipeline for a single question with session tracking.
     """
     # Retrieve relevant chunks
     retrieved = retrieve_relevant_chunks(query, model, index, chunks)
@@ -348,10 +563,19 @@ def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, 
         print(f"{i}. [Score: {score:.3f}] {chunk}")
         print("---")  # Separator between chunks
     
+    # Save user message to database if session_id provided
+    if session_id:
+        save_chat_message(session_id, 'user', query)
+    
     # Generate answer
     print("\nGenerating answer...")
     answer = generate_answer(query, retrieved)
     enhanced_answer = enhance_answer_quality(answer, query)
+    
+    # Save bot response to database if session_id provided
+    if session_id:
+        retrieved_data = [{"text": chunk, "score": float(score)} for chunk, score in retrieved]
+        save_chat_message(session_id, 'bot', enhanced_answer, retrieved_data)
     
     return enhanced_answer
 
@@ -494,7 +718,6 @@ def call_gemini_api(prompt: str) -> str:
         logger.error(f"Request to Gemini API failed: {str(e)}")
         return f"Sorry, I encountered an error connecting to the AI service: {str(e)}"
 
-
 def enhance_answer_quality(answer: str, query: str) -> str:
     """ 
     Post-process the generated answer to ensure formatting consistency:
@@ -539,36 +762,101 @@ def enhance_answer_quality(answer: str, query: str) -> str:
 
     return "\n\n".join(new_paragraphs)
 
-# ----------------------------------------------------------------------------------------------------- ------------------ 
-
-
+# ----------------------------------------------------------------------------------------------------- 
 
 def main():
-    """Main function to run the complete QA system."""
+    """Enhanced main function with session management"""
     try:
-        # Check if we need to process a source
-        if not os.path.exists("chunks.pkl"):
-            source = input("Enter the path to your .docx/.txt/.pdf file or a URL: ").strip()
-            if not source:
-                source = "sample.docx"
-            process_source(source)
+        import sys
+        session_id = None
+        
+        # Check for session argument
+        if len(sys.argv) > 1 and sys.argv[1] == "--session":
+            if len(sys.argv) > 2:
+                session_id = sys.argv[2]
+                print(f"Resuming session: {session_id}")
+                
+                # Load existing session
+                model, index, chunks = initialize_qa_system_from_session(session_id)
+            else:
+                # List available sessions
+                sessions = get_chat_sessions()
+                if sessions:
+                    print("\nAvailable chat sessions:")
+                    for i, session in enumerate(sessions):
+                        print(f"{i+1}. {session['document_source']} ({session['chunk_count']} chunks) - {session['updated_at']}")
+                    
+                    choice = input("\nEnter session number to resume or 'n' for new session: ")
+                    if choice.isdigit() and 1 <= int(choice) <= len(sessions):
+                        session_id = sessions[int(choice)-1]['session_id']
+                        model, index, chunks = initialize_qa_system_from_session(session_id)
+                    else:
+                        session_id = None
+                else:
+                    print("No previous sessions found.")
+                    session_id = None
+        
+        # Start new session if no session loaded
+        if not session_id:
+            if not os.path.exists("chunks.pkl"):
+                source = input("Enter the path to your .docx/.txt/.pdf file or a URL: ").strip()
+                if not source:
+                    source = "sample.docx"
+                chunks, session_id = process_source(source)
+            else:
+                chunks = load_chunks_from_file()
+                session_id = create_chat_session("Existing chunks.pkl", chunks)
+            
+            # Initialize the QA system
+            model, index, chunks = initialize_qa_system()
 
-        # Initialize the QA system
-        model, index, chunks = initialize_qa_system()
-
-        # Chat loop
-        print("\nStart chatting with the system! (type 'stop chat' to exit)\n")
+        print(f"\nSession ID: {session_id}")
+        print("Start chatting with the system! (type 'stop chat' to exit)")
+        print("Type 'list sessions' to see previous chats or 'switch session' to change session\n")
+        
         while True:
             query = input("Enter your query: ").strip()
+            
             if query.lower() in ['stop chat', 'exit', 'quit']:
                 print("Chat ended.")
                 break
+            elif query.lower() == 'list sessions':
+                sessions = get_chat_sessions()
+                if sessions:
+                    print("\nPrevious chat sessions:")
+                    for i, session in enumerate(sessions):
+                        current_indicator = " (CURRENT)" if session['session_id'] == session_id else ""
+                        print(f"{i+1}. {session['document_source']} - {session['updated_at']}{current_indicator}")
+                else:
+                    print("No previous sessions found.")
+                continue
+            elif query.lower() == 'switch session':
+                sessions = get_chat_sessions()
+                if sessions:
+                    print("\nAvailable sessions:")
+                    for i, session in enumerate(sessions):
+                        current_indicator = " (CURRENT)" if session['session_id'] == session_id else ""
+                        print(f"{i+1}. {session['document_source']} - {session['updated_at']}{current_indicator}")
+                    
+                    choice = input("\nEnter session number to switch to: ")
+                    if choice.isdigit() and 1 <= int(choice) <= len(sessions):
+                        new_session_id = sessions[int(choice)-1]['session_id']
+                        if new_session_id != session_id:
+                            print(f"Switching to session {new_session_id}...")
+                            # Restart with new session
+                            os.execv(sys.executable, [sys.executable] + sys.argv + ['--session', new_session_id])
+                    else:
+                        print("Invalid choice.")
+                else:
+                    print("No sessions available.")
+                continue
+                
             if not query:
                 print("Please enter a valid query.")
                 continue
 
             # Process the query
-            answer = answer_question(query, model, index, chunks)
+            answer = answer_question(query, model, index, chunks, session_id)
 
             # Display the answer
             print("\nFinal Answer:\n")
