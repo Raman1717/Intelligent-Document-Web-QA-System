@@ -44,12 +44,12 @@ API_KEY = "AIzaSyDL4T66vw6uN0UgsGBxxuTFqVE9Nes84sQ"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 DEFAULT_TOP_K = 3
 
-# Database configuration - UPDATE THESE WITH YOUR MYSQL CREDENTIALS
+# Database configuration - UPDATED to match app.py
 DB_CONFIG = {
     'host': 'localhost',
     'user': 'root',
-    'password': 'Raman@mysql',  # Change this to your MySQL password
-    'database': 'rag_chat_system'
+    'password': 'Raman@mysql',
+    'database': 'rag_chat_user'  # Changed to match app.py
 }
 
 # ------------------ Database Functions ------------------
@@ -63,7 +63,7 @@ def get_db_connection():
         logger.error(f"Error connecting to MySQL database: {e}")
         return None
 
-def create_chat_session(document_source: str, chunks: List[str]) -> str:
+def create_chat_session(document_source: str, chunks: List[str], user_id: int = None) -> str:
     """Create a new chat session and store chunks in database"""
     session_id = str(uuid.uuid4())
     connection = get_db_connection()
@@ -74,21 +74,21 @@ def create_chat_session(document_source: str, chunks: List[str]) -> str:
     try:
         cursor = connection.cursor()
         
-        # Insert session
+        # Insert session with user_id
         cursor.execute(
-            "INSERT INTO chat_sessions (session_id, document_source, chunk_count) VALUES (%s, %s, %s)",
-            (session_id, document_source, len(chunks))
+            "INSERT INTO chat_sessions (session_id, user_id, document_source, chunk_count) VALUES (%s, %s, %s, %s)",
+            (session_id, user_id, document_source, len(chunks))
         )
         
-        # Insert chunks
-        chunk_data = [(session_id, i, chunk) for i, chunk in enumerate(chunks)]
+        # Insert chunks with user_id
+        chunk_data = [(session_id, user_id, i, chunk) for i, chunk in enumerate(chunks)]
         cursor.executemany(
-            "INSERT INTO session_chunks (session_id, chunk_index, chunk_text) VALUES (%s, %s, %s)",
+            "INSERT INTO session_chunks (session_id, user_id, chunk_index, chunk_text) VALUES (%s, %s, %s, %s)",
             chunk_data
         )
         
         connection.commit()
-        logger.info(f"Created chat session {session_id} with {len(chunks)} chunks")
+        logger.info(f"Created chat session {session_id} with {len(chunks)} chunks for user {user_id}")
         return session_id
         
     except Error as e:
@@ -99,7 +99,7 @@ def create_chat_session(document_source: str, chunks: List[str]) -> str:
             cursor.close()
             connection.close()
 
-def save_chat_message(session_id: str, message_type: str, content: str, retrieved_chunks: List[Dict] = None):
+def save_chat_message(session_id: str, message_type: str, content: str, user_id: int = None, retrieved_chunks: List[Dict] = None):
     """Save a chat message to database"""
     connection = get_db_connection()
     if not connection:
@@ -112,8 +112,8 @@ def save_chat_message(session_id: str, message_type: str, content: str, retrieve
         chunks_json = json.dumps(retrieved_chunks) if retrieved_chunks else None
         
         cursor.execute(
-            "INSERT INTO chat_messages (session_id, message_type, content, retrieved_chunks) VALUES (%s, %s, %s, %s)",
-            (session_id, message_type, content, chunks_json)
+            "INSERT INTO chat_messages (session_id, user_id, message_type, content, retrieved_chunks) VALUES (%s, %s, %s, %s, %s)",
+            (session_id, user_id, message_type, content, chunks_json)
         )
         
         connection.commit()
@@ -128,18 +128,26 @@ def save_chat_message(session_id: str, message_type: str, content: str, retrieve
             cursor.close()
             connection.close()
 
-def get_chat_sessions() -> List[Dict]:
-    """Get all chat sessions ordered by latest first"""
+def get_chat_sessions(user_id: int = None) -> List[Dict]:
+    """Get all chat sessions for a specific user ordered by latest first"""
     connection = get_db_connection()
     if not connection:
         return []
     
     try:
         cursor = connection.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT session_id, document_source, chunk_count, created_at, updated_at "
-            "FROM chat_sessions ORDER BY updated_at DESC"
-        )
+        if user_id:
+            cursor.execute(
+                "SELECT session_id, document_source, chunk_count, created_at, updated_at "
+                "FROM chat_sessions WHERE user_id = %s ORDER BY updated_at DESC",
+                (user_id,)
+            )
+        else:
+            cursor.execute(
+                "SELECT session_id, document_source, chunk_count, created_at, updated_at "
+                "FROM chat_sessions ORDER BY updated_at DESC"
+            )
+            
         sessions = cursor.fetchall()
         
         # Convert datetime objects to strings for JSON serialization
@@ -157,7 +165,7 @@ def get_chat_sessions() -> List[Dict]:
             cursor.close()
             connection.close()
 
-def get_chat_history(session_id: str) -> List[Dict]:
+def get_chat_history(session_id: str, user_id: int = None) -> List[Dict]:
     """Get chat history for a specific session"""
     connection = get_db_connection()
     if not connection:
@@ -165,11 +173,19 @@ def get_chat_history(session_id: str) -> List[Dict]:
     
     try:
         cursor = connection.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT message_type, content, retrieved_chunks, created_at "
-            "FROM chat_messages WHERE session_id = %s ORDER BY created_at ASC",
-            (session_id,)
-        )
+        if user_id:
+            cursor.execute(
+                "SELECT message_type, content, retrieved_chunks, created_at "
+                "FROM chat_messages WHERE session_id = %s AND user_id = %s ORDER BY created_at ASC",
+                (session_id, user_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT message_type, content, retrieved_chunks, created_at "
+                "FROM chat_messages WHERE session_id = %s ORDER BY created_at ASC",
+                (session_id,)
+            )
+            
         messages = cursor.fetchall()
         
         # Parse JSON fields and convert datetime
@@ -188,7 +204,7 @@ def get_chat_history(session_id: str) -> List[Dict]:
             cursor.close()
             connection.close()
 
-def get_session_chunks(session_id: str) -> List[str]:
+def get_session_chunks(session_id: str, user_id: int = None) -> List[str]:
     """Get chunks for a specific session"""
     connection = get_db_connection()
     if not connection:
@@ -196,10 +212,17 @@ def get_session_chunks(session_id: str) -> List[str]:
     
     try:
         cursor = connection.cursor()
-        cursor.execute(
-            "SELECT chunk_text FROM session_chunks WHERE session_id = %s ORDER BY chunk_index ASC",
-            (session_id,)
-        )
+        if user_id:
+            cursor.execute(
+                "SELECT chunk_text FROM session_chunks WHERE session_id = %s AND user_id = %s ORDER BY chunk_index ASC",
+                (session_id, user_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT chunk_text FROM session_chunks WHERE session_id = %s ORDER BY chunk_index ASC",
+                (session_id,)
+            )
+            
         chunks = [row[0] for row in cursor.fetchall()]
         return chunks
         
@@ -211,7 +234,7 @@ def get_session_chunks(session_id: str) -> List[str]:
             cursor.close()
             connection.close()
 
-def delete_chat_session(session_id: str) -> bool:
+def delete_chat_session(session_id: str, user_id: int = None) -> bool:
     """Delete a chat session and all related data"""
     connection = get_db_connection()
     if not connection:
@@ -219,7 +242,11 @@ def delete_chat_session(session_id: str) -> bool:
     
     try:
         cursor = connection.cursor()
-        cursor.execute("DELETE FROM chat_sessions WHERE session_id = %s", (session_id,))
+        if user_id:
+            cursor.execute("DELETE FROM chat_sessions WHERE session_id = %s AND user_id = %s", (session_id, user_id))
+        else:
+            cursor.execute("DELETE FROM chat_sessions WHERE session_id = %s", (session_id,))
+            
         connection.commit()
         logger.info(f"Deleted chat session {session_id}")
         return True
@@ -234,7 +261,7 @@ def delete_chat_session(session_id: str) -> bool:
 
 # ------------------- Phase 1 — Document Ingestion & Chunking ----------------------------
 
-def process_source(source: str, session_id: str = None) -> Tuple[List[str], str]:
+def process_source(source: str, session_id: str = None, user_id: int = None) -> Tuple[List[str], str]:
     """ 
     Complete source processing pipeline for either file or URL.
     Returns chunks and session_id.
@@ -244,7 +271,7 @@ def process_source(source: str, session_id: str = None) -> Tuple[List[str], str]
     
     # Create new session if not provided
     if not session_id:
-        session_id = create_chat_session(source, chunks)
+        session_id = create_chat_session(source, chunks, user_id)
         if not session_id:
             logger.error("Failed to create chat session, using local storage only")
     
@@ -490,12 +517,12 @@ def initialize_qa_system() -> Tuple[SentenceTransformer, faiss.Index, List[str]]
     print(f"Stored embeddings for {len(chunks)} chunks in FAISS")
     return model, index, chunks
 
-def initialize_qa_system_from_session(session_id: str) -> Tuple[SentenceTransformer, faiss.Index, List[str]]:
+def initialize_qa_system_from_session(session_id: str, user_id: int = None) -> Tuple[SentenceTransformer, faiss.Index, List[str]]:
     """Initialize QA system from a specific session"""
     print(f"Loading session {session_id}...")
     
     # Get chunks from database
-    chunks = get_session_chunks(session_id)
+    chunks = get_session_chunks(session_id, user_id)
     if not chunks:
         raise ValueError(f"No chunks found for session {session_id}")
     
@@ -550,7 +577,7 @@ def create_faiss_index(embeddings: np.ndarray) -> faiss.Index:
 
 #   ------------------------------ Phase 3 — Retrieval & Answer Generation ---------------------------
 
-def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str], session_id: str = None) -> str:
+def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str], session_id: str = None, user_id: int = None) -> str:
     """ 
     Complete QA pipeline for a single question with session tracking.
     """
@@ -565,7 +592,7 @@ def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, 
     
     # Save user message to database if session_id provided
     if session_id:
-        save_chat_message(session_id, 'user', query)
+        save_chat_message(session_id, 'user', query, user_id)
     
     # Generate answer
     print("\nGenerating answer...")
@@ -575,7 +602,7 @@ def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, 
     # Save bot response to database if session_id provided
     if session_id:
         retrieved_data = [{"text": chunk, "score": float(score)} for chunk, score in retrieved]
-        save_chat_message(session_id, 'bot', enhanced_answer, retrieved_data)
+        save_chat_message(session_id, 'bot', enhanced_answer, user_id, retrieved_data)
     
     return enhanced_answer
 
