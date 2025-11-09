@@ -1,43 +1,70 @@
--- Create database
-CREATE DATABASE rag_chat_system;
-USE rag_chat_system;
+-- Create database (if not exists)
+CREATE DATABASE IF NOT EXISTS rag_chat_user;
+USE rag_chat_user;
+drop database rag_chat_user;
 
--- Table to store chat sessions
+-- ==============================
+-- USERS TABLE (NEW)
+-- ==============================
+CREATE TABLE users (
+    user_id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    auth_token VARCHAR(255) UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ==============================
+-- CHAT SESSIONS TABLE
+-- ==============================
 CREATE TABLE chat_sessions (
     session_id VARCHAR(36) PRIMARY KEY,
+    user_id INT NOT NULL,  -- NEW: links session to the user
     document_source VARCHAR(500),
     chunk_count INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
--- Table to store messages in each session
+-- ==============================
+-- CHAT MESSAGES TABLE
+-- ==============================
 CREATE TABLE chat_messages (
     message_id INT AUTO_INCREMENT PRIMARY KEY,
     session_id VARCHAR(36),
+    user_id INT NOT NULL,  -- NEW: each message belongs to a specific user
     message_type ENUM('user', 'bot'),
     content TEXT,
     retrieved_chunks JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
--- Table to store document chunks for each session
+-- ==============================
+-- SESSION CHUNKS TABLE
+-- ==============================
 CREATE TABLE session_chunks (
     session_id VARCHAR(36),
+    user_id INT NOT NULL,  -- NEW: ensures chunks are scoped to the user
     chunk_index INT,
     chunk_text TEXT,
     PRIMARY KEY (session_id, chunk_index),
-    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
--- Indexes for performance
+-- ==============================
+-- INDEXES
+-- ==============================
+CREATE INDEX idx_sessions_user ON chat_sessions(user_id);
+CREATE INDEX idx_messages_user ON chat_messages(user_id);
+CREATE INDEX idx_chunks_user ON session_chunks(user_id);
 CREATE INDEX idx_sessions_created ON chat_sessions(created_at);
 CREATE INDEX idx_messages_session ON chat_messages(session_id);
 CREATE INDEX idx_chunks_session ON session_chunks(session_id);
-
--- Example queries
-SHOW TABLES;
+SELECT * FROM users;
 SELECT * FROM chat_sessions;
-SELECT * FROM chat_messages;
 SELECT * FROM session_chunks;
+SELECT * FROM chat_messages;
