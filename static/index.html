@@ -257,7 +257,7 @@
         <div class="confirm-modal-content">
             <div class="confirm-modal-title">Delete Chat Session?</div>
             <div class="confirm-modal-text">
-                This will permanently delete this chat session and all its messages. This action cannot be undone.
+                This will permanently delete this chat session and all its messages. This action cannot be undo.
             </div>
             <div class="confirm-modal-buttons">
                 <button class="confirm-btn confirm-btn-cancel" onclick="closeConfirmDelete()">
@@ -799,12 +799,18 @@
             try {
                 showLoading();
                 
-                const res = await fetch(`${API_BASE}/sessions/${sessionId}`, {
-                    headers: { Authorization: currentUser.token },
+                // First load the session data and initialize QA system
+                const loadResponse = await fetch(`${API_BASE}/sessions/${sessionId}/load`, {
+                    method: 'POST',
+                    headers: { 
+                        'Authorization': currentUser.token,
+                        'Content-Type': 'application/json'
+                    }
                 });
-                const data = await res.json();
                 
-                if (data.status === "success") {
+                const loadData = await loadResponse.json();
+                
+                if (loadData.status === 'success') {
                     currentSessionId = sessionId;
                     
                     // Update active session in sidebar with smooth transition
@@ -822,8 +828,8 @@
                     setTimeout(() => {
                         messagesDiv.innerHTML = '';
                         
-                        if (Array.isArray(data.history) && data.history.length > 0) {
-                            data.history.forEach((msg, index) => {
+                        if (Array.isArray(loadData.history) && loadData.history.length > 0) {
+                            loadData.history.forEach((msg, index) => {
                                 setTimeout(() => {
                                     addMessage(msg.message_type, msg.content);
                                 }, index * 50); // Stagger message appearance
@@ -851,6 +857,11 @@
                     queryInput.placeholder = "Ask a question about your document...";
                     
                     showStatus('Session loaded successfully', 'success');
+                } else {
+                    showStatus(loadData.message || 'Failed to load session', 'error');
+                    if (clickedSession) {
+                        clickedSession.classList.remove('loading');
+                    }
                 }
             } catch (error) {
                 console.error("Failed to load session history:", error);
@@ -1220,36 +1231,53 @@
             
             const avatar = type === 'user' ? '👤' : '🤖';
             
+            // Enhanced formatting for better bullet points and structure
             let formattedContent = content
-                .replace(/^[\*\-] (.+)$/gm, '<li>$1</li>')
+                // Convert bullet points to proper list items
+                .replace(/^•\s+(.+)$/gm, '<li>$1</li>')
+                // Convert numbered lists
+                .replace(/^(\d+)\.\s+(.+)$/gm, '<li data-number="$1">$2</li>')
+                // Handle bold text
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                // Handle line breaks and paragraphs
+                .replace(/\n\n/g, '</p><p>')
                 .replace(/\n/g, '<br>');
             
-            if (formattedContent.includes('<li>')) {
+            // Wrap in paragraph if needed
+            if (!formattedContent.includes('<li>') && !formattedContent.includes('<p>')) {
+                formattedContent = '<p>' + formattedContent + '</p>';
+            } else if (formattedContent.includes('<li>')) {
+                // Handle lists
                 let parts = formattedContent.split('<br>');
                 let result = [];
                 let inList = false;
+                let isOrdered = false;
                 
                 for (let part of parts) {
                     if (part.includes('<li>')) {
                         if (!inList) {
-                            result.push('<ul>');
+                            // Check if it's an ordered list
+                            isOrdered = part.includes('data-number');
+                            result.push(isOrdered ? '<ol>' : '<ul>');
                             inList = true;
                         }
                         result.push(part);
                     } else {
                         if (inList) {
-                            result.push('</ul>');
+                            result.push(isOrdered ? '</ol>' : '</ul>');
                             inList = false;
+                            isOrdered = false;
                         }
-                        if (part.trim()) {
+                        if (part.trim() && !part.includes('</p>') && !part.includes('<p>')) {
+                            result.push('<p>' + part + '</p>');
+                        } else if (part.trim()) {
                             result.push(part);
                         }
                     }
                 }
                 
                 if (inList) {
-                    result.push('</ul>');
+                    result.push(isOrdered ? '</ol>' : '</ul>');
                 }
                 
                 formattedContent = result.join('');

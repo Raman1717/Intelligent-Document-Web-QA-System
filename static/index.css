@@ -1537,3 +1537,257 @@
             opacity: 0.6;
             cursor: not-allowed;
         }
+
+                /* Add these new styles to your existing CSS */
+        .message-content ul {
+            list-style: none;
+            padding-left: 0;
+            margin: 8px 0;
+        }
+        
+        .message-content li {
+            padding: 6px 0;
+            line-height: 1.5;
+            position: relative;
+            padding-left: 20px;
+        }
+        
+        .message-content li:before {
+            content: "•";
+            position: absolute;
+            left: 0;
+            color: var(--primary-color);
+            font-weight: bold;
+            font-size: 18px;
+        }
+        
+        .message-content strong {
+            color: var(--primary-color);
+            font-weight: 600;
+        }
+        
+        .message-content p {
+            margin: 8px 0;
+            line-height: 1.6;
+        }
+        
+        .message-content {
+            line-height: 1.6;
+        }
+        
+        /* Improved numbered lists */
+        .message-content ol {
+            list-style: none;
+            padding-left: 0;
+            margin: 8px 0;
+            counter-reset: item;
+        }
+        
+        .message-content ol li {
+            padding: 6px 0;
+            padding-left: 28px;
+            position: relative;
+        }
+        
+        .message-content ol li:before {
+            content: counter(item) ".";
+            counter-increment: item;
+            position: absolute;
+            left: 0;
+            color: var(--primary-color);
+            font-weight: bold;
+            width: 20px;
+        }
+        strong {
+  letter-spacing: 0.5px;
+  word-spacing: 3px;
+}
+strong {
+  letter-spacing: 0.6px;  
+  padding: 0 3px;         
+}
+:root[data-theme="light"] strong {
+  color: #1a8a46; /* darker green for light backgrounds */
+}
+
+:root[data-theme="dark"] strong {
+  color: #b3ffcc; /* bright mint green for dark mode */
+}
+.message-content strong {
+  text-shadow: 0 0 6px rgba(179, 255, 204, 0.3);
+}
+:root[data-theme="light"] {
+  --history-text-color: #1a1a1a; /* dark gray for light mode */
+  --history-subtext-color: #5a5a5a; /* slightly lighter for dates */
+}
+
+:root[data-theme="dark"] {
+  --history-text-color: #f4f4f4; /* soft white for dark mode */
+  --history-subtext-color: #bcbcbc; /* gray tone for dates */
+}
+.session-item .session-name {
+  color: var(--history-text-color);
+  font-weight: 600;
+}
+
+.session-item .session-date {
+  color: var(--history-subtext-color);
+  font-size: 0.9em;
+}
+.session-item:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+  transition: background-color 0.2s ease-in-out;
+}
+[data-theme="dark"] .session-item:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="light"] {
+  --user-text-color: #1a1a1a;        /* dark text for light mode */
+  --logout-text-color: #2b2b2b;      /* slightly lighter gray for contrast */
+  --logout-hover-bg: rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="dark"] {
+  --user-text-color: #f4f4f4;        /* light text for dark mode */
+  --logout-text-color: #eaeaea;
+  --logout-hover-bg: rgba(255, 255, 255, 0.1);
+}
+.user-info span {
+  color: var(--user-text-color);
+  font-weight: 500;
+}
+
+.logout-btn {
+  color: var(--logout-text-color);
+  background: transparent;
+  border: none;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.logout-btn:hover {
+  background-color: var(--logout-hover-bg);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+:root[data-theme="light"] {
+  --session-bg: #ffffff;
+  --session-border: rgba(0, 0, 0, 0.1);
+  --session-text: #1a1a1a;
+  --session-subtext: #5a5a5a;
+  
+  /* ✅ active chat fix */
+  --session-active-bg: #f0fff4; /* soft mint background */
+  --session-active-text: #0b3d24; /* deep greenish text for contrast */
+  --session-active-border: rgba(0, 0, 0, 0.15);
+}
+
+:root[data-theme="dark"] {
+  --session-bg: #2a2a33;
+  --session-border: rgba(255, 255, 255, 0.1);
+  --session-text: #f2f2f2;
+  --session-subtext: #bcbcbc;
+  --session-active-bg: #313a33;
+  --session-active-text: #ffffff;
+  --session-active-border: rgba(179, 255, 204, 0.3);
+}
+
+.session-item {
+  background-color: var(--session-bg);
+  border: 1px solid var(--session-border);
+  border-radius: 10px;
+  color: var(--session-text);
+  transition: all 0.25s ease;
+}
+
+.session-item .session-name {
+  color: var(--session-text);
+  font-weight: 600;
+}
+
+.session-item .session-date {
+  color: var(--session-subtext);
+}
+
+.session-item.active {
+  background-color: var(--session-active-bg);
+  border-color: var(--session-active-border);
+  color: var(--session-active-text);
+}
+
+.session-item.active .session-name {
+  color: var(--session-active-text);
+}
+
+.session-item.active .session-date {
+  color: color-mix(in srgb, var(--session-active-text), #aaa 40%);
+}
+/* ----------- LIGHT MODE ----------- */
+:root[data-theme="light"] {
+  --session-bg: #ffffff;
+  --session-border: rgba(0, 0, 0, 0.1);
+  --session-text: #1a1a1a;
+  --session-subtext: #5a5a5a;
+
+  /* ACTIVE CHAT FIX */
+  --session-active-bg: #e8fff0; /* very soft mint green */
+  --session-active-text: #1c1c1c; /* strong dark gray for readability */
+  --session-active-subtext: #2e2e2e;
+  --session-active-border: rgba(0, 0, 0, 0.2);
+}
+
+/* ----------- DARK MODE ----------- */
+:root[data-theme="dark"] {
+  --session-bg: #2a2a33;
+  --session-border: rgba(255, 255, 255, 0.1);
+  --session-text: #f2f2f2;
+  --session-subtext: #bcbcbc;
+
+  --session-active-bg: #313a33;
+  --session-active-text: #ffffff;
+  --session-active-subtext: #b3ffcc;
+  --session-active-border: rgba(179, 255, 204, 0.3);
+}
+
+/* ----------- SESSION ITEM STYLES ----------- */
+.session-item {
+  background-color: var(--session-bg);
+  border: 1px solid var(--session-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--session-text);
+  transition: all 0.25s ease;
+}
+
+/* Title */
+.session-item .session-name {
+  color: var(--session-text) !important;
+  font-weight: 600;
+}
+
+/* Date */
+.session-item .session-date {
+  color: var(--session-subtext) !important;
+  font-size: 0.9em;
+}
+
+/* ----------- ACTIVE SESSION FIX ----------- */
+.session-item.active {
+  background-color: var(--session-active-bg) !important;
+  border-color: var(--session-active-border) !important;
+}
+
+.session-item.active .session-name {
+  color: var(--session-active-text) !important;
+}
+
+.session-item.active .session-date {
+  color: var(--session-active-subtext) !important;
+}
+
+/* Optional hover polish */
+.session-item:hover {
+  background-color: rgba(179, 255, 204, 0.1);
+  transform: translateY(-1px);
+}
