@@ -4,7 +4,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import mysql.connector
 import os, uuid, logging
-import embedding  # your RAG logic here
+import embedding 
 
 # =============================
 # CONFIGURATION
@@ -29,7 +29,7 @@ ALLOWED_EXTENSIONS = {"txt", "pdf", "docx"}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# Global variables to store the QA system state (from old app.py)
+
 model = None
 index = None
 chunks = None
@@ -204,7 +204,7 @@ def reset_system():
 # =============================
 @app.route("/api/process-file", methods=["POST"])
 def process_file():
-    global is_initialized, current_session_id
+    global is_initialized, current_session_id, model, index, chunks
     
     token = request.headers.get("Authorization")
     user = verify_user_token(token)
@@ -229,15 +229,22 @@ def process_file():
         chunks, session_id = embedding.process_source(filepath, user_id=user["user_id"])
         current_session_id = session_id
         
-        # Reset initialization flag
-        is_initialized = False
+        # Initialize the QA system immediately after processing
+        try:
+            model, index, chunks = embedding.initialize_qa_system()
+            is_initialized = True
+            logger.info(f"QA system initialized with {len(chunks)} chunks")
+        except Exception as init_error:
+            logger.error(f"Failed to initialize QA system: {str(init_error)}")
+            is_initialized = False
 
         return jsonify({
             "status": "success",
             "message": f"File processed into {len(chunks)} chunks.",
             "chunk_count": len(chunks),
             "filename": filename,
-            "session_id": session_id
+            "session_id": session_id,
+            "initialized": is_initialized
         })
     except Exception as e:
         logger.error(f"Error processing file: {str(e)}")
@@ -245,7 +252,7 @@ def process_file():
 
 @app.route("/api/process-url", methods=["POST"])
 def process_url():
-    global is_initialized, current_session_id
+    global is_initialized, current_session_id, model, index, chunks
     
     token = request.headers.get("Authorization")
     user = verify_user_token(token)
@@ -264,15 +271,22 @@ def process_url():
         chunks, session_id = embedding.process_source(url, user_id=user["user_id"])
         current_session_id = session_id
         
-        # Reset initialization flag
-        is_initialized = False
+        # Initialize the QA system immediately after processing
+        try:
+            model, index, chunks = embedding.initialize_qa_system()
+            is_initialized = True
+            logger.info(f"QA system initialized with {len(chunks)} chunks")
+        except Exception as init_error:
+            logger.error(f"Failed to initialize QA system: {str(init_error)}")
+            is_initialized = False
         
         return jsonify({
             "status": "success",
             "message": f"URL processed into {len(chunks)} chunks.",
             "chunk_count": len(chunks),
             "url": url,
-            "session_id": session_id
+            "session_id": session_id,
+            "initialized": is_initialized
         })
     except Exception as e:
         logger.error(f"Error processing URL: {str(e)}")
@@ -341,18 +355,6 @@ def query():
     try:
         logger.info(f"Processing query: {question}")
         
-        # Retrieve relevant chunks
-        retrieved_chunks = embedding.retrieve_relevant_chunks(question, model, index, chunks)
-        
-        # Format chunks for response
-        chunks_data = [
-            {
-                'text': chunk_text,
-                'score': float(score)
-            }
-            for chunk_text, score in retrieved_chunks
-        ]
-        
         # Pass user_id to answer_question
         answer = embedding.answer_question(question, model, index, chunks, 
                                          session_id=session_id, user_id=user["user_id"])
@@ -362,8 +364,6 @@ def query():
         return jsonify({
             "status": "success",
             "answer": answer,
-            "retrieved_chunks": chunks_data,
-            "chunk_count": len(retrieved_chunks),
             "session_id": session_id
         })
     except Exception as e:
@@ -441,7 +441,8 @@ def load_session(session_id):
             'message': f'Session loaded!',
             'chunk_count': len(chunks),
             'session_id': session_id,
-            'history': history
+            'history': history,
+            'initialized': True
         })
         
     except Exception as e:

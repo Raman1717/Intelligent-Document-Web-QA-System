@@ -20,6 +20,9 @@ import mysql.connector
 from mysql.connector import Error
 import uuid
 from datetime import datetime
+from PIL import Image
+import pytesseract
+import io
 
 # ------------------ NLTK DOWNLOAD CHECK ------------------ 
 try:
@@ -44,13 +47,221 @@ API_KEY = "AIzaSyDL4T66vw6uN0UgsGBxxuTFqVE9Nes84sQ"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 DEFAULT_TOP_K = 3
 
-# Database configuration - UPDATED to match app.py
+# Tesseract OCR Configuration
+# Update this path based on your Tesseract installation
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# Database configuration
 DB_CONFIG = {
     'host': 'localhost',
     'user': 'root',
     'password': 'Raman@mysql',
-    'database': 'rag_chat_user'  # Changed to match app.py
+    'database': 'rag_chat_user'
 }
+
+# ------------------ Image OCR Functions ------------------
+
+def extract_text_from_image(image_data: Union[str, bytes, Image.Image]) -> str:
+    """
+    Extract text from an image using OCR (Tesseract).
+    
+    Args:
+        image_data: Can be file path, bytes, or PIL Image object
+        
+    Returns:
+        Extracted text from the image
+    """
+    try:
+        # Handle different input types
+        if isinstance(image_data, str):
+            # File path
+            image = Image.open(image_data)
+        elif isinstance(image_data, bytes):
+            # Bytes data
+            image = Image.open(io.BytesIO(image_data))
+        elif isinstance(image_data, Image.Image):
+            # Already a PIL Image
+            image = image_data
+        else:
+            logger.warning(f"Unsupported image data type: {type(image_data)}")
+            return ""
+        
+        # Convert to RGB if necessary (for better OCR results)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Extract text using Tesseract
+        extracted_text = pytesseract.image_to_string(image, lang='eng')
+        
+        # Clean the extracted text
+        cleaned_text = clean_paragraph(extracted_text)
+        
+        if cleaned_text:
+            logger.info(f"Successfully extracted {len(cleaned_text)} characters from image via OCR")
+            return cleaned_text
+        else:
+            logger.warning("No text extracted from image")
+            return ""
+            
+    except Exception as e:
+        logger.error(f"Error extracting text from image: {str(e)}")
+        return ""
+
+def extract_images_and_text_from_pdf(filename: str) -> Tuple[str, List[str]]:
+    """
+    Extract both text and images from PDF, then OCR the images.
+    
+    Returns:
+        Tuple of (combined_text, list of image texts)
+    """
+    text_content = ""
+    image_texts = []
+    
+    try:
+        # Open PDF with PyMuPDF for better image extraction
+        doc = fitz.open(filename)
+        
+        for page_num, page in enumerate(doc):
+            # Extract regular text
+            page_text = page.get_text()
+            if page_text:
+                cleaned = clean_paragraph(page_text)
+                if cleaned:
+                    text_content += cleaned + "\n"
+            
+            # Extract images from page
+            image_list = page.get_images(full=True)
+            
+            for img_index, img_info in enumerate(image_list):
+                try:
+                    xref = img_info[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    
+                    # Perform OCR on the image
+                    image_text = extract_text_from_image(image_bytes)
+                    
+                    if image_text and len(image_text.strip()) > 10:  # Only add if substantial text found
+                        image_texts.append(image_text)
+                        logger.info(f"Extracted text from image {img_index + 1} on page {page_num + 1}")
+                    
+                except Exception as img_error:
+                    logger.warning(f"Could not process image {img_index + 1} on page {page_num + 1}: {str(img_error)}")
+                    continue
+        
+        doc.close()
+        logger.info(f"Extracted text from {len(image_texts)} images in PDF")
+        
+    except Exception as e:
+        logger.error(f"Error extracting images from PDF: {str(e)}")
+    
+    return text_content, image_texts
+
+def extract_images_and_text_from_docx(filename: str) -> Tuple[str, List[str]]:
+    """
+    Extract both text and images from DOCX file, then OCR the images.
+    
+    Returns:
+        Tuple of (combined_text, list of image texts)
+    """
+    text_content = ""
+    image_texts = []
+    
+    try:
+        doc = Document(filename)
+        
+        # Extract text from paragraphs
+        for para in doc.paragraphs:
+            cleaned = clean_paragraph(para.text)
+            if cleaned:
+                text_content += cleaned + " "
+        
+        # Extract images from document
+        try:
+            from docx.oxml import parse_xml
+            from docx.oxml.ns import qn
+            
+            # Get all image relationships
+            for rel in doc.part.rels.values():
+                if "image" in rel.target_ref:
+                    try:
+                        image_data = rel.target_part.blob
+                        
+                        # Perform OCR on the image
+                        image_text = extract_text_from_image(image_data)
+                        
+                        if image_text and len(image_text.strip()) > 10:
+                            image_texts.append(image_text)
+                            logger.info(f"Extracted text from image in DOCX")
+                        
+                    except Exception as img_error:
+                        logger.warning(f"Could not process image in DOCX: {str(img_error)}")
+                        continue
+        except Exception as e:
+            logger.warning(f"Could not extract images from DOCX: {str(e)}")
+        
+        logger.info(f"Extracted text from {len(image_texts)} images in DOCX")
+        
+    except Exception as e:
+        logger.error(f"Error extracting images from DOCX: {str(e)}")
+    
+    return text_content, image_texts
+
+def extract_images_from_url(url: str) -> List[str]:
+    """
+    Download and OCR images from a web URL.
+    
+    Returns:
+        List of extracted texts from images
+    """
+    image_texts = []
+    
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return image_texts
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # Find all image tags
+        images = soup.find_all('img')
+        
+        for img_tag in images[:10]:  # Limit to first 10 images to avoid overload
+            try:
+                img_url = img_tag.get('src')
+                
+                if not img_url:
+                    continue
+                
+                # Handle relative URLs
+                if img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+                elif img_url.startswith('/'):
+                    from urllib.parse import urljoin
+                    img_url = urljoin(url, img_url)
+                elif not img_url.startswith('http'):
+                    continue
+                
+                # Download image
+                img_response = requests.get(img_url, timeout=5)
+                if img_response.status_code == 200:
+                    # Perform OCR
+                    image_text = extract_text_from_image(img_response.content)
+                    
+                    if image_text and len(image_text.strip()) > 10:
+                        image_texts.append(image_text)
+                        logger.info(f"Extracted text from web image: {img_url}")
+                
+            except Exception as img_error:
+                logger.warning(f"Could not process web image: {str(img_error)}")
+                continue
+        
+        logger.info(f"Extracted text from {len(image_texts)} images from URL")
+        
+    except Exception as e:
+        logger.error(f"Error extracting images from URL: {str(e)}")
+    
+    return image_texts
 
 # ------------------ Database Functions ------------------
 
@@ -74,13 +285,11 @@ def create_chat_session(document_source: str, chunks: List[str], user_id: int = 
     try:
         cursor = connection.cursor()
         
-        # Insert session with user_id
         cursor.execute(
             "INSERT INTO chat_sessions (session_id, user_id, document_source, chunk_count) VALUES (%s, %s, %s, %s)",
             (session_id, user_id, document_source, len(chunks))
         )
         
-        # Insert chunks with user_id
         chunk_data = [(session_id, user_id, i, chunk) for i, chunk in enumerate(chunks)]
         cursor.executemany(
             "INSERT INTO session_chunks (session_id, user_id, chunk_index, chunk_text) VALUES (%s, %s, %s, %s)",
@@ -108,7 +317,6 @@ def save_chat_message(session_id: str, message_type: str, content: str, user_id:
     try:
         cursor = connection.cursor()
         
-        # Convert retrieved chunks to JSON
         chunks_json = json.dumps(retrieved_chunks) if retrieved_chunks else None
         
         cursor.execute(
@@ -150,7 +358,6 @@ def get_chat_sessions(user_id: int = None) -> List[Dict]:
             
         sessions = cursor.fetchall()
         
-        # Convert datetime objects to strings for JSON serialization
         for session in sessions:
             session['created_at'] = session['created_at'].isoformat() if session['created_at'] else None
             session['updated_at'] = session['updated_at'].isoformat() if session['updated_at'] else None
@@ -188,7 +395,6 @@ def get_chat_history(session_id: str, user_id: int = None) -> List[Dict]:
             
         messages = cursor.fetchall()
         
-        # Parse JSON fields and convert datetime
         for message in messages:
             if message['retrieved_chunks']:
                 message['retrieved_chunks'] = json.loads(message['retrieved_chunks'])
@@ -259,36 +465,34 @@ def delete_chat_session(session_id: str, user_id: int = None) -> bool:
             cursor.close()
             connection.close()
 
-# ------------------- Phase 1 — Document Ingestion & Chunking ----------------------------
+# ------------------- Phase 1 — Document Ingestion & Chunking with OCR ----------------------------
 
 def process_source(source: str, session_id: str = None, user_id: int = None) -> Tuple[List[str], str]:
     """ 
-    Complete source processing pipeline for either file or URL.
+    Complete source processing pipeline for file or URL WITH IMAGE OCR.
     Returns chunks and session_id.
     """
-    print(" Processing document and URL ...")
+    print("🔄 Processing document/URL with image extraction...")
     chunks = extract_chunks(source)
     
-    # Create new session if not provided
     if not session_id:
         session_id = create_chat_session(source, chunks, user_id)
         if not session_id:
             logger.error("Failed to create chat session, using local storage only")
     
     save_chunks_to_file(chunks)
-    print(f"Extracted {len(chunks)} chunks and saved to chunks.pkl")
+    print(f"✅ Extracted {len(chunks)} chunks (including text from images) and saved to chunks.pkl")
     if session_id:
-        print(f"Session ID: {session_id}")
+        print(f"📝 Session ID: {session_id}")
     return chunks, session_id
 
 def extract_chunks(source: str) -> List[str]:
     """ 
-    Extract chunks from either a file path or a URL.
+    Extract chunks from file or URL WITH IMAGE OCR.
     """
     if is_valid_url(source):
         return extract_chunks_from_url(source)
     else:
-        # Check file extension and use appropriate function
         if source.lower().endswith('.docx'):
             return extract_chunks_from_docx(source)
         elif source.lower().endswith(('.txt', '.pdf')):
@@ -308,16 +512,26 @@ def is_valid_url(url: str) -> bool:
 
 def extract_chunks_from_url(url: str) -> List[str]:
     """ 
-    Extract and dynamically chunk text from a web URL.
+    Extract and chunk text from URL INCLUDING images via OCR.
     """
+    # Extract text content
     text_content = scrape_web_content(url)
     cleaned_text = clean_paragraph(text_content)
     text_content = cleaned_text if cleaned_text else ""
+    
+    # Extract text from images on the page
+    image_texts = extract_images_from_url(url)
+    
+    # Combine all text
+    combined_text = text_content
+    if image_texts:
+        combined_text += "\n\n[IMAGE CONTENT]\n" + "\n\n".join(image_texts)
+        logger.info(f"Added {len(image_texts)} image texts to URL content")
 
-    preprocessed_text = preprocess_text(text_content)
+    preprocessed_text = preprocess_text(combined_text)
     words = preprocessed_text.split()
     total_words = len(words)
-    logger.info(f"Total words from URL after preprocessing: {total_words}")
+    logger.info(f"Total words from URL (with images): {total_words}")
 
     if total_words <= 500:
         chunk_size = 100
@@ -342,12 +556,9 @@ def scrape_web_content(url: str) -> str:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
-            # Remove script and style elements
             for script in soup(["script", "style"]):
                 script.decompose()
-            # Get text content
             text = soup.get_text(separator="\n", strip=True)
-            # Clean up the text
             lines = (line.strip() for line in text.splitlines())
             chunks = (phrase.strip() for line in lines for phrase in line.split(" "))
             text = ' '.join(chunk for chunk in chunks if chunk)
@@ -385,20 +596,23 @@ def preprocess_text(text: str) -> str:
 
 def extract_chunks_from_docx(filename: str) -> List[str]:
     """ 
-    Extract and dynamically chunk text from a Word document.
+    Extract and chunk text from DOCX INCLUDING images via OCR.
     """
     validate_file(filename)
-    doc = Document(filename)
-    all_text = []
-    for para in doc.paragraphs:
-        cleaned = clean_paragraph(para.text)
-        if cleaned:
-            all_text.append(cleaned)
-    full_text = " ".join(all_text)
-    preprocessed_text = preprocess_text(full_text)
+    
+    # Extract text and images
+    text_content, image_texts = extract_images_and_text_from_docx(filename)
+    
+    # Combine text and image content
+    combined_text = text_content
+    if image_texts:
+        combined_text += "\n\n[IMAGE CONTENT]\n" + "\n\n".join(image_texts)
+        logger.info(f"Added {len(image_texts)} image texts to DOCX content")
+    
+    preprocessed_text = preprocess_text(combined_text)
     words = preprocessed_text.split()
     total_words = len(words)
-    logger.info(f"Total words in document after preprocessing: {total_words}")
+    logger.info(f"Total words in DOCX (with images): {total_words}")
 
     if total_words <= 500:
         chunk_size = 100
@@ -412,7 +626,7 @@ def extract_chunks_from_docx(filename: str) -> List[str]:
     for i in range(0, total_words, chunk_size):
         chunk = " ".join(words[i:i + chunk_size])
         chunks.append(chunk)
-    logger.info(f"Created {len(chunks)} chunks")
+    logger.info(f"Created {len(chunks)} chunks from DOCX")
     return chunks
 
 def validate_file(filename: str) -> None:
@@ -428,7 +642,7 @@ def validate_file(filename: str) -> None:
 
 def extract_chunks_from_other_formats(filename: str) -> List[str]:
     """
-    Extract and dynamically chunk text from .txt or .pdf files.
+    Extract and chunk text from TXT or PDF INCLUDING images via OCR.
     """
     if not os.path.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
@@ -436,49 +650,29 @@ def extract_chunks_from_other_formats(filename: str) -> List[str]:
     file_ext = filename.lower().split('.')[-1]
     
     if file_ext == 'txt':
-        # Read text file
         with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
             text_content = f.read()
+        image_texts = []
     elif file_ext == 'pdf':
-        # Extract text from PDF using PyPDF2
-        text_content = ""
-        try:
-            with open(filename, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                for page in pdf_reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        cleaned = clean_paragraph(page_text)
-                        if cleaned:
-                            text_content += cleaned + "\n"
-        except Exception as e:
-            logger.error(f"Error reading PDF with PyPDF2: {str(e)}")
-            # Fallback to PyMuPDF if available
-            try:
-                doc = fitz.open(filename)
-                for page in doc:
-                    page_text = page.get_text()
-                    if page_text:
-                        cleaned = clean_paragraph(page_text)
-                        if cleaned:
-                            text_content += cleaned + "\n"
-                doc.close()
-            except Exception as e2:
-                logger.error(f"Error reading PDF with PyMuPDF: {str(e2)}")
-                raise Exception(f"Could not extract text from PDF: {str(e)}, {str(e2)}")
+        # Extract text and images from PDF
+        text_content, image_texts = extract_images_and_text_from_pdf(filename)
     else:
         raise ValueError(f"Unsupported file format: {filename}")
     
-    # Clean paragraph for .txt as well
+    # Combine text and image content
     if file_ext == 'txt':
         cleaned_text = clean_paragraph(text_content)
-        text_content = cleaned_text if cleaned_text else ""
+        combined_text = cleaned_text if cleaned_text else ""
+    else:
+        combined_text = text_content
+        if image_texts:
+            combined_text += "\n\n[IMAGE CONTENT]\n" + "\n\n".join(image_texts)
+            logger.info(f"Added {len(image_texts)} image texts to PDF content")
 
-    # Use the same preprocessing and chunking logic as existing functions
-    preprocessed_text = preprocess_text(text_content)
+    preprocessed_text = preprocess_text(combined_text)
     words = preprocessed_text.split()
     total_words = len(words)
-    logger.info(f"Total words from {file_ext.upper()} after preprocessing: {total_words}")
+    logger.info(f"Total words from {file_ext.upper()} (with images): {total_words}")
     
     if total_words <= 500:
         chunk_size = 100
@@ -521,12 +715,10 @@ def initialize_qa_system_from_session(session_id: str, user_id: int = None) -> T
     """Initialize QA system from a specific session"""
     print(f"Loading session {session_id}...")
     
-    # Get chunks from database
     chunks = get_session_chunks(session_id, user_id)
     if not chunks:
         raise ValueError(f"No chunks found for session {session_id}")
     
-    # Create embeddings and index
     model, embeddings = create_embeddings(chunks)
     index = create_faiss_index(embeddings)
     
@@ -581,26 +773,21 @@ def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, 
     """ 
     Complete QA pipeline for a single question with session tracking.
     """
-    # Retrieve relevant chunks
     retrieved = retrieve_relevant_chunks(query, model, index, chunks)
-    print(f"\nRetrieved {len(retrieved)} relevant chunks:")
     
+    print(f"\n🔍 Retrieved {len(retrieved)} relevant chunks:")
     for i, (chunk, score) in enumerate(retrieved, 1):
-        # Show FULL chunk without truncation
-        print(f"{i}. [Score: {score:.3f}] {chunk}")
-        print("---")  # Separator between chunks
+        print(f"{i}. [Score: {score:.3f}] {chunk[:100]}...")
+    print("---")
     
-    # Save user message to database if session_id provided
-    if session_id:
+    if session_id and user_id:
         save_chat_message(session_id, 'user', query, user_id)
     
-    # Generate answer
-    print("\nGenerating answer...")
+    print("\n🤖 Generating answer...")
     answer = generate_answer(query, retrieved)
     enhanced_answer = enhance_answer_quality(answer, query)
     
-    # Save bot response to database if session_id provided
-    if session_id:
+    if session_id and user_id:
         retrieved_data = [{"text": chunk, "score": float(score)} for chunk, score in retrieved]
         save_chat_message(session_id, 'bot', enhanced_answer, user_id, retrieved_data)
     
@@ -609,7 +796,6 @@ def answer_question(query: str, model: SentenceTransformer, index: faiss.Index, 
 def retrieve_relevant_chunks(query: str, model: SentenceTransformer, index: faiss.Index, chunks: List[str], top_k: int = DEFAULT_TOP_K) -> List[Tuple[str, float]]:
     """ 
     Retrieve the most relevant chunks for a query with their similarity scores.
-    Returns FULL chunks without truncation.
     """
     try:
         preprocessed_query = preprocess_text(query)
@@ -619,13 +805,13 @@ def retrieve_relevant_chunks(query: str, model: SentenceTransformer, index: fais
         retrieved = []
         for idx, score in zip(I[0], D[0]):
             if score > 0.15:
-                retrieved.append((chunks[idx], float(score)))  # Full chunk, no truncation
+                retrieved.append((chunks[idx], float(score)))
         
         retrieved.sort(key=lambda x: x[1], reverse=True)
         
         if not retrieved and I.size > 0:
             for i in range(min(3, len(I[0]))):
-                retrieved.append((chunks[I[0][i]], float(D[0][i])))  # Full chunk, no truncation
+                retrieved.append((chunks[I[0][i]], float(D[0][i])))
         
         return retrieved[:top_k]
     except Exception as e:
@@ -638,66 +824,106 @@ def generate_answer(query: str, retrieved_chunks: List[Tuple[str, float]]) -> st
     """
     prompt = construct_enhanced_prompt(query, retrieved_chunks)
     return call_gemini_api(prompt)
- 
+
 def construct_enhanced_prompt(query: str, retrieved_chunks: List[Tuple[str, float]]) -> str:
-    """ 
-    Construct a prompt for the LLM that allows mixed formatting:
-    - Paragraphs (50–120 words each)
-    - Points only when the query explicitly requires it
+    """
+    Construct a prompt for the LLM that allows mixed formatting with better structure.
     """
     if not retrieved_chunks:
         return f"""Answer the following question based on your general knowledge.
+
 Question: {query}
 
 FORMAT RULES:
-- Use **bold headings** only when introducing major sections.
-- Write in **paragraphs of 30–300 words** when possible and try .
-- If the query asks for steps, types, advantages, methods, differences, or lists → use **bullet/numbered points**.
-- Otherwise, prefer paragraphs.
-- if word 'summarize' come then pls summarize according which give me best summarization.
-- Ensure smooth joining of all provided context chunks.
+- Use simple bullet points with • symbol
+- Write in clear, concise paragraphs when needed
+- Use numbered lists (1., 2., 3.) for steps or sequential information
+- Use bullet points (•) for features, advantages, or non-sequential lists
+- Bold important terms using **term**
+- Keep formatting simple and clean
 """
 
-    # Merge retrieved chunks into context
     context_parts = []
     for i, (chunk, score) in enumerate(retrieved_chunks):
         clean_chunk = re.sub(r'\s+', ' ', chunk).strip()
         context_parts.append(f"[Source {i+1}, Relevance: {score:.3f}] {clean_chunk}")
+    
     context = "\n\n".join(context_parts)
-
-    # Detect if list structure is needed
+    
+    # Detect if query requires list/point format
     list_indicators = [
-        "list", "steps", "ways", "methods", "types", "advantages", "disadvantages", 
-        "benefits", "features", "points", "factors", "arguments", "grounds", "reasons", "differences"
+        "list", "steps", "ways", "methods", "types", "advantages", 
+        "disadvantages", "benefits", "features", "points", "factors",
+        "arguments", "grounds", "reasons", "differences", "explain in points",
+        "bullet points", "enumerate", "outline"
     ]
+    
     requires_list_format = any(word in query.lower() for word in list_indicators)
-
-    prompt = f"""You are an expert assistant. Use the retrieved chunks to answer the question.
+    
+    prompt = f"""You are an expert assistant. Use the retrieved chunks to answer the question accurately and in a well-formatted manner.
 
 CRITICAL INSTRUCTIONS:
-- Use retrieved chunks directly and merge them smoothly into the answer.
-- If chunks are fragmented, rephrase and join them logically.
-- Maintain factual accuracy.
+1. Merge all retrieved chunks smoothly and logically
+2. Maintain factual accuracy from the source material
+3. Text marked as [IMAGE CONTENT] is equally important
+4. Use SIMPLE formatting - NO markdown headings (##, ###)
+5. Use bullet points with • symbol for lists
+6. Use numbered lists for sequential steps
 
-FORMAT RULES:
-- Use **bold headings** only for section titles (not every line).
-- Paragraphs should be in 10 – 300 words depend upon the chunks provied to you so pls see all the chunks provide to you then see the query then genrate the ans and then see it should below 120 words .
-- If the question requires a list (e.g., types, steps, advantages), use bullet/numbered points.
-- Otherwise, write in paragraphs.
-- Highlight key terms in **bold**.
+FORMATTING REQUIREMENTS:
+"""
+
+    if requires_list_format:
+        prompt += """
+- Start with a brief introduction (1-2 sentences)
+- Use numbered lists for sequential information:
+  1. First point with explanation
+  2. Second point with explanation
+- Use bullet points (•) for non-sequential lists
+- Each point should have 2-4 sentences of explanation
+- Bold key terms using **term**
+- Add a concluding sentence if appropriate
+
+Example format:
+Brief introduction explaining the context.
+
+• **First Point**: Detailed explanation of the first point with relevant information from the chunks.
+
+• **Second Point**: Detailed explanation with supporting details.
+
+• **Third Point**: Clear explanation with context.
+
+Concluding remarks if needed.
+"""
+    else:
+        prompt += """
+- Write in clear paragraphs (3-5 sentences each)
+- Bold important terms using **term**
+- Use proper spacing between paragraphs
+- Maintain a natural, flowing narrative
+- Use bullet points when listing multiple items
+
+Example format:
+First paragraph introducing the topic with key information from the retrieved chunks.
+
+Second paragraph diving deeper into specific aspects with supporting details.
+
+Additional paragraphs providing comprehensive coverage of the topic.
+"""
+
+    prompt += f"""
 
 CONTEXT (with relevance scores):
 {context}
 
 QUESTION: {query}
 
-Now provide the final answer following the formatting rules.
+Now provide a well-formatted answer following the above rules. Remember:
+- NO markdown headings (##, ###)
+- Use simple bullet points with • symbol
+- Use numbered lists for steps
+- Ensure proper spacing between elements
 """
-
-    if requires_list_format:
-        prompt += "\nSince the query expects multiple points, use a list with explanations."
-    else:
-        prompt += "\nSince the query is descriptive, prefer paragraphs."
 
     return prompt
 
@@ -714,10 +940,10 @@ def call_gemini_api(prompt: str) -> str:
             }
         ],
         "generationConfig": {
-            "temperature": 0.2,  # Lower temperature for more focused responses
+            "temperature": 0.2,
             "topK": 20,
             "topP": 0.8,
-            "maxOutputTokens": 4096,  # Increased from 1024 to allow longer responses
+            "maxOutputTokens": 4096,
         },
         "safetySettings": [
             {
@@ -746,48 +972,76 @@ def call_gemini_api(prompt: str) -> str:
         return f"Sorry, I encountered an error connecting to the AI service: {str(e)}"
 
 def enhance_answer_quality(answer: str, query: str) -> str:
-    """ 
-    Post-process the generated answer to ensure formatting consistency:
-    - Paragraphs of ~50–120 words
-    - Clean bold headings
-    - Lists only when needed
     """
-    # Remove boilerplate phrases
+    Post-process the generated answer to ensure clean, consistent formatting.
+    """
+    # Remove common LLM preambles
     patterns_to_remove = [
-        r"Based on the provided context,?",
-        r"According to the context,?",
-        r"As mentioned in the sources,?",
-        r"The context (indicates|shows|states|says) that",
-        r"Based on my analysis",
-        r"According to the information provided"
+        r"Based on the provided context,?\s*",
+        r"According to the context,?\s*",
+        r"As mentioned in the sources,?\s*",
+        r"The context (indicates|shows|states|says) that\s*",
+        r"Based on my analysis,?\s*",
+        r"According to the information provided,?\s*",
+        r"Here is the answer:?\s*",
+        r"Here's the answer:?\s*"
     ]
+    
     for pattern in patterns_to_remove:
         answer = re.sub(pattern, "", answer, flags=re.IGNORECASE)
+    
+    # Remove markdown headings completely
+    answer = re.sub(r'#{1,6}\s+', '', answer)
+    
+    # Fix common formatting issues
+    # Convert various bullet styles to simple •
+    answer = re.sub(r'^[\s]*[-*●]\s+', '• ', answer, flags=re.MULTILINE)
+    
+    # Ensure proper bullet formatting
+    answer = re.sub(r'^•\s*', '• ', answer, flags=re.MULTILINE)
+    
+    # Fix numbered lists
+    answer = re.sub(r'^\s*(\d+)\.\s*\*\*', r'\1. **', answer, flags=re.MULTILINE)
+    
+    # Normalize whitespace
+    answer = re.sub(r' +', ' ', answer)  # Multiple spaces to single
+    answer = re.sub(r'\n\s*\n\s*\n+', '\n\n', answer)  # Max 2 newlines
+    
+    # Ensure proper spacing after list items
+    answer = re.sub(r'(^\d+\..*?[.!?])\n(?=\d+\.)', r'\1\n\n', answer, flags=re.MULTILINE)
+    answer = re.sub(r'(^•.*?[.!?])\n(?=•)', r'\1\n\n', answer, flags=re.MULTILINE)
+    
+    # Fix spacing around bold text
+    answer = re.sub(r'\*\*\s+', '**', answer)
+    answer = re.sub(r'\s+\*\*', '**', answer)
+    
+    # Clean up any remaining issues
+    answer = answer.strip()
+    
+    # Ensure answer doesn't start with formatting artifacts
+    answer = re.sub(r'^[\s\*#\-●]+', '', answer)
+    
+    return answer
 
-    # Normalize spacing
-    answer = re.sub(r'\s+', ' ', answer).strip()
-    answer = re.sub(r'\n\s*\n', '\n\n', answer)
-
-    # Ensure headings are bold
-    answer = re.sub(r'(^|\n)([A-Z][A-Za-z ]+:)', r'\n**\2**', answer)
-
-    # Split long paragraphs (>120 words)
-    sentences = re.split(r'(?<=[.!?])\s+', answer)
-    new_paragraphs, current = [], []
-    count = 0
-    for sentence in sentences:
-        word_count = len(sentence.split())
-        if count + word_count > 120 and current:
-            new_paragraphs.append(" ".join(current))
-            current = [sentence]
-            count = word_count
+def display_formatted_answer(answer: str) -> None:
+    """
+    Display the answer with proper formatting in terminal.
+    """
+    lines = answer.split('\n')
+    
+    for line in lines:
+        # Numbered lists
+        if re.match(r'^\d+\.\s+', line):
+            print(f"\n{line}")
+        # Bullet points
+        elif line.strip().startswith('•'):
+            print(f"  {line.strip()}")
+        # Regular text
         else:
-            current.append(sentence)
-            count += word_count
-    if current:
-        new_paragraphs.append(" ".join(current))
-
-    return "\n\n".join(new_paragraphs)
+            if line.strip():
+                print(line)
+            else:
+                print()  # Preserve blank lines
 
 # ----------------------------------------------------------------------------------------------------- 
 
@@ -801,15 +1055,13 @@ def main():
         if len(sys.argv) > 1 and sys.argv[1] == "--session":
             if len(sys.argv) > 2:
                 session_id = sys.argv[2]
-                print(f"Resuming session: {session_id}")
+                print(f"🔄 Resuming session: {session_id}")
                 
-                # Load existing session
                 model, index, chunks = initialize_qa_system_from_session(session_id)
             else:
-                # List available sessions
                 sessions = get_chat_sessions()
                 if sessions:
-                    print("\nAvailable chat sessions:")
+                    print("\n📚 Available chat sessions:")
                     for i, session in enumerate(sessions):
                         print(f"{i+1}. {session['document_source']} ({session['chunk_count']} chunks) - {session['updated_at']}")
                     
@@ -823,10 +1075,9 @@ def main():
                     print("No previous sessions found.")
                     session_id = None
         
-        # Start new session if no session loaded
         if not session_id:
             if not os.path.exists("chunks.pkl"):
-                source = input("Enter the path to your .docx/.txt/.pdf file or a URL: ").strip()
+                source = input("📄 Enter the path to your .docx/.txt/.pdf file or a URL: ").strip()
                 if not source:
                     source = "sample.docx"
                 chunks, session_id = process_source(source)
@@ -834,23 +1085,22 @@ def main():
                 chunks = load_chunks_from_file()
                 session_id = create_chat_session("Existing chunks.pkl", chunks)
             
-            # Initialize the QA system
             model, index, chunks = initialize_qa_system()
 
-        print(f"\nSession ID: {session_id}")
-        print("Start chatting with the system! (type 'stop chat' to exit)")
-        print("Type 'list sessions' to see previous chats or 'switch session' to change session\n")
+        print(f"\n✅ Session ID: {session_id}")
+        print("💬 Start chatting with the system! (type 'stop chat' to exit)")
+        print("📋 Commands: 'list sessions' | 'switch session' | 'stop chat'\n")
         
         while True:
-            query = input("Enter your query: ").strip()
+            query = input("❓ Enter your query: ").strip()
             
             if query.lower() in ['stop chat', 'exit', 'quit']:
-                print("Chat ended.")
+                print("👋 Chat ended.")
                 break
             elif query.lower() == 'list sessions':
                 sessions = get_chat_sessions()
                 if sessions:
-                    print("\nPrevious chat sessions:")
+                    print("\n📚 Previous chat sessions:")
                     for i, session in enumerate(sessions):
                         current_indicator = " (CURRENT)" if session['session_id'] == session_id else ""
                         print(f"{i+1}. {session['document_source']} - {session['updated_at']}{current_indicator}")
@@ -860,7 +1110,7 @@ def main():
             elif query.lower() == 'switch session':
                 sessions = get_chat_sessions()
                 if sessions:
-                    print("\nAvailable sessions:")
+                    print("\n📚 Available sessions:")
                     for i, session in enumerate(sessions):
                         current_indicator = " (CURRENT)" if session['session_id'] == session_id else ""
                         print(f"{i+1}. {session['document_source']} - {session['updated_at']}{current_indicator}")
@@ -869,33 +1119,30 @@ def main():
                     if choice.isdigit() and 1 <= int(choice) <= len(sessions):
                         new_session_id = sessions[int(choice)-1]['session_id']
                         if new_session_id != session_id:
-                            print(f"Switching to session {new_session_id}...")
-                            # Restart with new session
+                            print(f"🔄 Switching to session {new_session_id}...")
                             os.execv(sys.executable, [sys.executable] + sys.argv + ['--session', new_session_id])
                     else:
-                        print("Invalid choice.")
+                        print("❌ Invalid choice.")
                 else:
                     print("No sessions available.")
                 continue
                 
             if not query:
-                print("Please enter a valid query.")
+                print("⚠️ Please enter a valid query.")
                 continue
 
-            # Process the query
             answer = answer_question(query, model, index, chunks, session_id)
 
-            # Display the answer
-            print("\nFinal Answer:\n")
-            print(answer)
+            print("\n✨ Final Answer:\n")
+            display_formatted_answer(answer)
             print("-" * 60)
 
     except FileNotFoundError:
         logger.error("Document file or chunks.pkl not found")
-        print("Error: File not found. Please check the file path.")
+        print("❌ Error: File not found. Please check the file path.")
     except Exception as e:
         logger.error(f"Unexpected error in main: {str(e)}")
-        print(f"An unexpected error occurred: {str(e)}")
+        print(f"❌ An unexpected error occurred: {str(e)}")
 
 if __name__ == "__main__":
     main()
